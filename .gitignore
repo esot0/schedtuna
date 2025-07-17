@@ -1,0 +1,14 @@
+venv/
+fs_results/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw
+*.pyzwz
+test_params.py
+test_rewards.py
+convert_csv.py
+note.txt

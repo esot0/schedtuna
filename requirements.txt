@@ -1,0 +1,20 @@
+# Requirements for RL-based scx_flashyspark Scheduler Optimization
+# Core ML libraries
+torch>=2.0.0
+gymnasium>=0.29.0
+numpy>=1.21.0
+pandas>=1.3.0
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# Standard libraries (usually included with Python)
+# The following are typically available but listed for completeness:
+# json, sys, os, time, logging, argparse, subprocess, signal, atexit, random
+# pathlib, datetime, typing, dataclasses, collections
+
+# Optional: For enhanced functionality
+# tensorboard>=2.8.0  # For advanced logging/visualization
+# scipy>=1.7.0       # For additional statistical functions
+# plotly>=5.0.0      # For interactive plots
