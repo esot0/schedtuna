@@ -1,5 +1,6 @@
 venv/
 fs_results/
+flashyspark_stats.txt
 *.pyc
 *.pyo
 *.pyd
@@ -8,7 +9,10 @@ fs_results/
 *.pywz
 *.pyzw
 *.pyzwz
+*.pt
+*.json
+*.log
 test_params.py
-test_rewards.py
+test_reward.py
 convert_csv.py
 note.txt

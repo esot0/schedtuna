@@ -121,6 +121,7 @@ try:
 
     # GPU Detection and Setup
     if torch.cuda.is_available():
+        print("GPU detected")
         DEVICE = torch.device("cuda")
         print(f"GPU detected: {torch.cuda.get_device_name(0)}")
         print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
@@ -177,8 +178,42 @@ class SchedulerParams:
     no_wake_sync: bool = False        # Change how tasks wake up other tasks
     aggressive_gpu_tasks: bool = False # Give GPU tasks the fastest CPU cores
     timer_kick: bool = False          # Use different timing mechanism
+    params = {}
 
-    def to_command_args(self) -> List[str]:
+    # def __init__(self, **kwargs):
+    #     # Initialize all parameters with default values first
+    #     self.slice_lag_scaling = False
+    #     self.rr_sched = False
+    #     self.no_builtin_idle = False
+    #     self.local_pcpu = False
+    #     self.direct_dispatch = False
+    #     self.sticky_cpu = False
+    #     self.stay_with_kthread = False
+    #     self.native_priority = False
+    #     self.local_kthreads = False
+    #     self.no_wake_sync = False
+    #     self.aggressive_gpu_tasks = False
+    #     self.timer_kick = False
+    #     self.params = {}
+
+    #     # Now update with provided kwargs
+    #     for key, value in kwargs.items():
+    #         if hasattr(self, key):
+    #             setattr(self, key, value)
+    #             self.params[key] = value
+    #         else:
+    #             raise ValueError(f"Invalid parameter: {key}")
+
+    def __hash__(self):
+        return hash(json.dumps(asdict(self), indent=4))
+
+    def __eq__(self, other):
+        return hash(self) == hash(other)
+
+    def __str__(self):
+        return json.dumps(asdict(self), indent=4, sort_keys=True)
+
+    def _to_command_args(self) -> List[str]:
         """Convert parameters to command line arguments for scx_flashyspark"""
         args = []
 
@@ -207,10 +242,123 @@ class SchedulerParams:
             args.append("--aggressive-gpu-tasks")
         if self.timer_kick:
             args.append("--timer-kick")
-
-
         return args
 
+class ParamWrapper:
+    @staticmethod
+    def append_attempted_combinations(params):
+        """Append a parameter combination to the attempted combinations file"""
+
+        # need to debug (not really appending)
+        try:
+            with open("attempted_combinations.log", "r") as f:
+                content = f.read()
+                if content:
+                    p = eval(content)
+                else:
+                    p = set()
+        except FileNotFoundError:
+            p = set()
+        except Exception:
+            p = set()  # If file is corrupted, start fresh
+
+        # Add new combinations
+        if isinstance(params, SchedulerParams):
+            p.add(str(params))
+        elif isinstance(params, str):
+            p.add(params)
+        elif isinstance(params, set):
+            p.update(params)
+        else:
+            raise ValueError(f"Invalid parameter type: {type(params)}")
+
+        # Write back to file
+        with open("attempted_combinations.log", "w") as f:
+            f.write(str(p))
+
+    @staticmethod
+    def save_attempted_combinations(params: list[SchedulerParams], filename: Optional[str] = "attempted_combinations"):
+
+        """
+        Save attempted parameter combinations to a file. Currently only tested for boolean parameters.
+        """
+        attempted_combinations = set()
+
+        for p in params:
+            attempted_combinations.add(str(p))
+
+        with open("attempted_combinations.log", "w") as f:
+            f.write(str(attempted_combinations))
+
+    @staticmethod
+    def list_all_combinations(params: list[str] = []):
+        from itertools import product
+        """List all possible combinations of the boolean parameters"""
+                # Use the same boolean parameter list as defined in FlashySparkEnvironment
+        bool_params = [
+            'slice_lag_scaling', 'rr_sched', 'no_builtin_idle',
+            'local_pcpu', 'direct_dispatch', 'sticky_cpu', 'stay_with_kthread',
+            'native_priority', 'local_kthreads', 'no_wake_sync', 'aggressive_gpu_tasks',
+            'timer_kick'
+        ]
+
+        all_combinations = set()
+        for p in product([True, False], repeat=len(bool_params)):
+            param_dict = dict(zip(bool_params, p))
+            key = json.dumps(param_dict, indent=4, sort_keys=True)
+            all_combinations.add(key)
+        return all_combinations
+
+    @staticmethod
+    def list_unattempted_combinations():
+        """
+        List all parameter combinations that have not been attempted. Currently only works for boolean parameters.
+        """
+        from itertools import product
+        try:
+            with open("attempted_combinations.log", "r") as f:
+                attempted_combinations = eval(f.read())
+        except FileNotFoundError:
+            attempted_combinations = set()
+
+        all_combinations = ParamWrapper.list_all_combinations()
+        # Calculate unattempted combinations
+        unattempted_combinations = all_combinations - attempted_combinations
+
+        with open("unchecked_combinations", "w") as f:
+            f.write(str(unattempted_combinations))
+
+        return unattempted_combinations
+
+    @staticmethod
+    def generate_all_combinations(params: list[SchedulerParams]):
+        """Generate all possible combinations of the boolean parameters"""
+        from itertools import product
+
+    @staticmethod
+    def get_unattempted_combinations():
+        """Get all unchecked combinations"""
+        try:
+            with open("unchecked_combinations", "r") as f:
+                unchecked_combinations = eval(f.read())
+        except FileNotFoundError:
+            unchecked_combinations = set()
+        return unchecked_combinations
+
+    @staticmethod
+    def get_attempted_combinations(params: list[SchedulerParams]):
+        """Get all attempted combinations"""
+        try:
+            with open("attempted_combinations.log", "r") as f:
+                attempted_combinations = eval(f.read())
+        except FileNotFoundError:
+            attempted_combinations = set()
+        return attempted_combinations
+
+    @staticmethod
+    def params_as_list(params: SchedulerParams ):
+        """Convert a SchedulerParams object to a list"""
+        return [""]
 
 @dataclass
 class BenchmarkResult:
@@ -240,10 +388,10 @@ class BenchmarkResult:
                    baseline_tg: Optional[float] = None, params: Optional['SchedulerParams'] = None,
                    reward_scaling: float = 1.0) -> float:
         """
-        SIMPLIFIED REWARD FUNCTION: Calculates a cleaner "reward score" for the AI
+        ENHANCED REWARD FUNCTION: Calculates a more informative "reward score" for the AI
 
-        This simplified version focuses on clear performance signals that are easier
-        for the RL agent to learn from. The key principle: higher performance = higher reward.
+        This enhanced version provides stronger gradients and better discrimination
+        between configurations to help the RL agent learn more effectively.
 
         Args:
             optimize_metric: Whether to focus on "pp" (prompt) or "tg" (text generation) speed
@@ -253,39 +401,67 @@ class BenchmarkResult:
             reward_scaling: Multiplier to make rewards more/less extreme
         """
         if not self.success:
-            return -100.0  # Clear penalty for failed runs
+            # Graduated penalties based on error type
+            if "timeout" in self.error_msg.lower():
+                return -50.0  # Moderate penalty for timeouts
+            elif "failed to start" in self.error_msg.lower():
+                return -200.0  # High penalty for configuration errors
+            else:
+                return -100.0  # Standard penalty for other failures
 
         # Use reasonable defaults if no baseline provided
         pp_baseline = baseline_pp if baseline_pp is not None and baseline_pp > 0 else 10000.0
         tg_baseline = baseline_tg if baseline_tg is not None and baseline_tg > 0 else 140.0
 
-        # Normalize performance against baseline (percentage improvement)
-        pp_improvement = (self.pp_tokens_per_sec / pp_baseline - 1.0) * 100.0  # % improvement
-        tg_improvement = (self.tg_tokens_per_sec / tg_baseline - 1.0) * 100.0   # % improvement
+        # Calculate raw performance ratios
+        pp_ratio = self.pp_tokens_per_sec / pp_baseline
+        tg_ratio = self.tg_tokens_per_sec / tg_baseline
 
-        # Weight the primary metric more heavily but keep both
+        # Use logarithmic scaling for better gradient discrimination
+        # This provides stronger signals for improvements and avoids reward plateaus
+        pp_log_reward = np.log(max(pp_ratio, 0.1)) * 50.0  # Log scaling amplifies differences
+        tg_log_reward = np.log(max(tg_ratio, 0.1)) * 50.0
+
+        # Weight the primary metric more heavily
         if optimize_metric == "pp_tokens_per_sec":
-            primary_reward = pp_improvement * 3.0      # 3x weight for primary metric
-            secondary_reward = tg_improvement * 1.0    # 1x weight for secondary
+            primary_reward = pp_log_reward * 4.0      # 4x weight for primary metric
+            secondary_reward = tg_log_reward * 1.0    # 1x weight for secondary
         else:  # optimize_metric == "tg"
-            primary_reward = tg_improvement * 3.0      # 3x weight for primary metric
-            secondary_reward = pp_improvement * 1.0    # 1x weight for secondary
+            primary_reward = tg_log_reward * 4.0      # 4x weight for primary metric
+            secondary_reward = pp_log_reward * 1.0    # 1x weight for secondary
 
         # Base reward from performance
         base_reward = primary_reward + secondary_reward
 
-        # Small bonus/penalty for execution time (keep it simple)
+        # Enhanced execution time bonus/penalty with more discrimination
         if self.execution_time > 0:
-            if self.execution_time < 9.0:
-                base_reward += 2.0    # Small bonus for very fast execution
-            elif self.execution_time > 10.0:
-                base_reward -= 2.0    # Small penalty for slow execution
+            if self.execution_time < 9.25:
+                base_reward += 10.0    # Significant bonus for very fast execution
+            elif self.execution_time < 9.35:
+                base_reward += 5.0     # Medium bonus for fast execution
+            elif self.execution_time > 9.45:
+                base_reward -= 10.0    # Penalty for slow execution
+ # Higher penalty for very slow execution
 
-        # Apply scaling and return
+        # Bonus for achieving high absolute performance (not just relative)
+        absolute_performance_bonus = 0.0
+        if self.pp_tokens_per_sec > pp_baseline * 1.1:  # 10% improvement
+            absolute_performance_bonus += 15.0
+        if self.tg_tokens_per_sec > tg_baseline * 1.1:  # 10% improvement
+            absolute_performance_bonus += 15.0
+
+        base_reward += absolute_performance_bonus
+
+        # Bonus for balanced performance (both metrics improved)
+        if pp_ratio > 1.0 and tg_ratio > 1.0:
+            balance_bonus = min(pp_ratio, tg_ratio) * 10.0  # Reward balanced improvement
+            base_reward += balance_bonus
+
+        # Apply scaling
         final_reward = base_reward * reward_scaling
 
-        # Clip extreme values to help with learning stability
-        #final_reward = max(-200.0, min(200.0, final_reward))
+        # More conservative clipping to prevent extreme values while preserving gradients
+        #final_reward = max(-300.0, min(300.0, final_reward))
 
         return final_reward
 
@@ -399,6 +575,9 @@ class FlashySparkEnvironment(gym.Env):
         self.performance_history = []
         self.max_history = 10
 
+        # Simple parameter combination tracking
+        self.unattempted_params = ParamWrapper.list_unattempted_combinations()  # Store SchedulerParams objects for ParamWrapper.save_attempted_combinations
+
         # Setup signal handlers for cleanup
         self._setup_cleanup()
 
@@ -497,9 +676,21 @@ class FlashySparkEnvironment(gym.Env):
         return observation, {}
 
     def step(self, action):
-        """Execute one step in the environment"""
-        # Convert action to scheduler parameters
-        params = self._denormalize_action(action)
+        """Execute one step in the environment - use RL guidance to select from unattempted combinations"""
+        # Convert agent's action to target parameters (what the agent wants to try)
+        agent_target_params = self._denormalize_action(action)
+
+        # Find the closest unattempted combination to what the agent wants
+        closest_unattempted = self._find_closest_unattempted_params(agent_target_params)
+
+        if closest_unattempted is not None:
+            # Use the closest unattempted combination to the agent's preference
+            params = closest_unattempted
+            print(f"Using RL-guided unattempted combination")
+        else:
+            # Fall back to agent's exact choice if no unattempted combinations left
+            params = agent_target_params
+            print("No unattempted combinations left, using agent's exact choice")
 
         # Run benchmark with these parameters
         result = self._run_benchmark(params)
@@ -557,7 +748,7 @@ class FlashySparkEnvironment(gym.Env):
             print(f"Testing parameters: {params}")
 
             # Start scheduler with parameters
-            scheduler_cmd = ["sudo", self.scheduler_path] + params.to_command_args()
+            scheduler_cmd = ["sudo", self.scheduler_path] + params._to_command_args()
             print(f"Starting scheduler: {' '.join(scheduler_cmd)}")
 
             start_time = time.time()
@@ -679,6 +870,47 @@ class FlashySparkEnvironment(gym.Env):
         self.baseline_calculated = True
         print(f"Fixed baseline set: PP={baseline_pp:.2f} tokens/sec, TG={baseline_tg:.2f} tokens/sec")
 
+    def _convert_string_to_params(self, params_str: str) -> SchedulerParams:
+        """Convert a parameter string back to SchedulerParams object"""
+        try:
+            params_dict = json.loads(params_str)
+            params = SchedulerParams()
+            for key, value in params_dict.items():
+                if hasattr(params, key):
+                    setattr(params, key, bool(value))
+            return params
+        except Exception as e:
+            print(f"Warning: Could not convert params string to SchedulerParams: {e}")
+            # Return default params as fallback
+            return SchedulerParams()
+
+    def _find_closest_unattempted_params(self, target_params: SchedulerParams) -> Optional[SchedulerParams]:
+        """Find and remove the closest unattempted combination to the target"""
+        if not self.unattempted_params:
+            return None
+
+        target_vector = self._normalize_params(target_params)
+        best_match = None
+        best_distance = float('inf')
+        best_params_str = None
+
+        for params_str in self.unattempted_params:
+            candidate_params = self._convert_string_to_params(params_str)
+            candidate_vector = self._normalize_params(candidate_params)
+
+            distance = np.linalg.norm(target_vector - candidate_vector)
+
+            if distance < best_distance:
+                best_distance = distance
+                best_match = candidate_params
+                best_params_str = params_str
+
+        if best_params_str:
+            self.unattempted_params.remove(best_params_str)
+            print(f"Selected closest unattempted combination (distance: {best_distance:.3f}). Remaining: {len(self.unattempted_params)}")
+
+        return best_match
+
 
 # ============================================================================
 # NEURAL NETWORK CLASSES - THE AI'S "BRAIN"
@@ -788,12 +1020,12 @@ class PPOAgent:
         self.value_net = MLPNetwork(state_dim, 1, device=self.device)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr)
 
-        # PPO hyperparameters - tuned for better learning
+        # PPO hyperparameters - tuned for better learning and faster convergence
         self.clip_ratio = 0.2
         self.value_loss_coeff = 0.5
-        self.entropy_coeff = 0.02  # Increased for better exploration
-        self.gamma = 0.95  # Slightly lower for faster learning
-        self.gae_lambda = 0.9  # Slightly lower for less bias
+        self.entropy_coeff = 0.05  # Higher entropy for better exploration when stuck
+        self.gamma = 0.9   # Lower for faster learning in episodic tasks
+        self.gae_lambda = 0.85  # Lower for less bias, faster adaptation
 
         # Training data storage
         self.states = []
@@ -986,7 +1218,7 @@ class SACAgent:
         if self.device.type == "cuda":
             print(f"SAC Agent initialized on GPU: {self.device}")
 
-    def get_action(self, state: np.ndarray, deterministic: bool = False):
+    def get_action(self, state: np.ndarray, deterministic: bool = False, exploration_noise: float = 0.1):
         """Sample action from policy with GPU acceleration"""
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
 
@@ -1118,6 +1350,7 @@ class ExperimentLogger:
         # Data storage
         self.episode_data = []
         self.best_params = None
+        self.attempted_params = set()
         self.best_reward = float('-inf')
 
     def setup_logging(self):
@@ -1146,6 +1379,7 @@ class ExperimentLogger:
         }
 
         self.episode_data.append(episode_record)
+        self.attempted_params.add(str(params))
 
         # Update best parameters
         if reward > self.best_reward:
@@ -1158,7 +1392,7 @@ class ExperimentLogger:
         # Log episode summary
         self.logger.info(f"Episode {episode}: Reward={reward:.3f}, Success={result.get('success', False)}")
 
-        # Save intermediate results every 10 episodes
+        # Save intermediate results every 10 episodes. Is this necessary since I already save every save_frequency episodes?
         if episode % 10 == 0:
             self.save_results(optimize_metric=self.optimize_metric)
 
@@ -1228,6 +1462,9 @@ class ExperimentLogger:
             df.sort_values(by=optimize_metric, inplace=True, ascending=False)
             csv_file = self.exp_dir / "episode_results.csv"
             df.to_csv(csv_file, index=False)
+
+            ParamWrapper.append_attempted_combinations(self.attempted_params)
+            self.attempted_params.clear()
 
         self.logger.info(f"Results saved to {self.exp_dir}")
 
@@ -1347,6 +1584,40 @@ def run_baseline_evaluation(env: FlashySparkEnvironment, num_runs: int = 5) -> D
     return baseline_stats
 
 
+def load_pretrained_model(agent, model_path: str, algorithm: str):
+    """Load a pre-trained model into the agent"""
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Pre-trained model not found: {model_path}")
+
+    checkpoint = torch.load(model_path, map_location=DEVICE)
+
+    # Load policy network
+    if 'policy_net' in checkpoint:
+        agent.policy_net.load_state_dict(checkpoint['policy_net'])
+
+    # Load policy optimizer
+    if 'policy_optimizer' in checkpoint:
+        agent.policy_optimizer.load_state_dict(checkpoint['policy_optimizer'])
+
+    # Load algorithm-specific networks
+    if algorithm == "ppo":
+        if 'value_net' in checkpoint and hasattr(agent, 'value_net'):
+            agent.value_net.load_state_dict(checkpoint['value_net'])
+        if 'value_optimizer' in checkpoint and hasattr(agent, 'value_optimizer'):
+            agent.value_optimizer.load_state_dict(checkpoint['value_optimizer'])
+    elif algorithm == "sac":
+        if 'q1_net' in checkpoint and hasattr(agent, 'q1_net'):
+            agent.q1_net.load_state_dict(checkpoint['q1_net'])
+        if 'q2_net' in checkpoint and hasattr(agent, 'q2_net'):
+            agent.q2_net.load_state_dict(checkpoint['q2_net'])
+        if 'value_net' in checkpoint and hasattr(agent, 'value_net'):
+            agent.value_net.load_state_dict(checkpoint['value_net'])
+        if 'target_value_net' in checkpoint and hasattr(agent, 'target_value_net'):
+            agent.target_value_net.load_state_dict(checkpoint['target_value_net'])
+
+    print(f"Loaded pre-trained model with {checkpoint.get('num_historical_experiences', 'unknown')} historical experiences")
+
+
 def train_rl_agent(
     algorithm: str = "ppo",
     episodes: int = 100,
@@ -1354,12 +1625,13 @@ def train_rl_agent(
     model_path: Optional[str] = None,
     experiment_name: Optional[str] = None,
     timeout: int = 300,
-    learning_rate: float = 1e-5,
+    learning_rate: float = 1e-6,
     update_frequency: int = 10,
-    save_frequency: int = 25,
+    save_frequency: int = 10,
     optimize_metric: str = "pp_tokens_per_sec",
     reward_scaling: float = 1.0,
-    use_gpu: bool = True
+    use_gpu: bool = True,
+    pretrained_model_path: Optional[str] = None
 ):
     """
     MAIN TRAINING FUNCTION - This is where the AI actually learns!
@@ -1456,6 +1728,12 @@ def train_rl_agent(
         else:
             raise ValueError(f"Unsupported algorithm: {algorithm}")
 
+        # Load pre-trained model if specified
+        if pretrained_model_path:
+            logger.logger.info(f"Loading pre-trained model from: {pretrained_model_path}")
+            load_pretrained_model(agent, pretrained_model_path, algorithm.lower())
+            logger.logger.info("Pre-trained model loaded successfully!")
+
         # STEP 4: Training loop - This is where the AI learns!
         logger.logger.info("Starting training loop...")
         state, _ = env.reset()  # Start in a clean state
@@ -1465,38 +1743,65 @@ def train_rl_agent(
         exploration_schedule = []  # Track exploration for analysis
         best_recent_avg = float('-inf')  # Track best recent average
         episodes_without_improvement = 0  # Early stopping detection
+        stuck_counter = 0  # Track how long we've been stuck
 
         for episode in range(1, episodes + 1):
             logger.logger.info(f"\n--- Episode {episode}/{episodes} ---")
 
-            # DYNAMIC EXPLORATION: Start high, decay over time
-            # Early episodes: explore more, later episodes: exploit more
-            exploration_noise = max(0.3 * (1.0 - episode / episodes), 0.05)
+            # ENHANCED DYNAMIC EXPLORATION with adaptive restarts
+            base_exploration = max(0.3 * (1.0 - episode / episodes), 0.05)
+
+            # Increase exploration when stuck
+            if episodes_without_improvement > 15:
+                stuck_penalty = min(episodes_without_improvement / 25, 1.0)  # Up to 100% boost
+                base_exploration = min(base_exploration * (1 + stuck_penalty), 0.5)
+                stuck_counter += 1
+
+                # Random restart every 10 episodes when very stuck
+                if stuck_counter > 10 and episode % 10 == 0:
+                    base_exploration = 0.6  # Force high exploration
+                    logger.logger.info(f"Random restart triggered - high exploration mode")
+                    stuck_counter = 0
+
+            exploration_noise = base_exploration
             exploration_schedule.append(exploration_noise)
 
-            # STEP 4a: AI decides what action to take (which parameters to try)
+                        # STEP 4a: AI decides what action to take (which parameters to try)
             # The AI looks at the current state and uses its neural network to decide
             # what scheduler parameters to test next
-            if algorithm.lower() == "ppo":
-                action = agent.get_action(state, exploration_noise=exploration_noise)  # PPO agent chooses parameters
 
-                # Get value estimate for PPO
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
-                with torch.no_grad():
-                    value = agent.value_net(state_tensor).item()
+            # Add epsilon-greedy exploration for better parameter space coverage
+            epsilon = min(0.1, exploration_noise)  # 20% chance of random action when exploring
+            use_random_action = np.random.random() < epsilon and episode > 5
 
-                # Calculate log probability for PPO
-                policy_output = agent.policy_net(state_tensor)
-                mean = policy_output[:, :action_dim]
-                log_std = policy_output[:, action_dim:]
-                std = torch.exp(log_std.clamp(-20, 2))
-                dist = Normal(mean, std + exploration_noise)  # Use same noise as action
-                log_prob = dist.log_prob(torch.FloatTensor(action).to(agent.device)).sum().item()
+            if use_random_action:
+                # Pure random exploration - sample random configuration
+                action = np.random.uniform(-1, 1, agent.action_dim)
+                value = 0.0
+                log_prob = 0.0
+                logger.logger.info(f"Random exploration action (ε={epsilon:.3f})")
+            else:
+                # Use agent's policy
+                if algorithm.lower() == "ppo":
+                    action = agent.get_action(state, exploration_noise=exploration_noise)  # PPO agent chooses parameters
 
-            else:  # SAC
-                action = agent.get_action(state)
-                value = 0.0  # SAC doesn't need value for storage
-                log_prob = 0.0  # SAC doesn't need log_prob for storage
+                    # Get value estimate for PPO
+                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
+                    with torch.no_grad():
+                        value = agent.value_net(state_tensor).item()
+
+                    # Calculate log probability for PPO
+                    policy_output = agent.policy_net(state_tensor)
+                    mean = policy_output[:, :action_dim]
+                    log_std = policy_output[:, action_dim:]
+                    std = torch.exp(log_std.clamp(-20, 2))
+                    dist = Normal(mean, std + exploration_noise)  # Use same noise as action
+                    log_prob = dist.log_prob(torch.FloatTensor(action).to(agent.device)).sum().item()
+
+                else:  # SAC
+                    action = agent.get_action(state, exploration_noise=exploration_noise)
+                    value = 0.0  # SAC doesn't need value for storage
+                    log_prob = 0.0  # SAC doesn't need log_prob for storage
 
             # STEP 4b: Test the chosen parameters and get results
             # This applies the AI's chosen settings to the scheduler, runs a benchmark,
@@ -1564,16 +1869,17 @@ def train_rl_agent(
                 else:
                     episodes_without_improvement += 1
 
-                # Warning if no improvement for a while
-                if episodes_without_improvement >= 25:
-                    logger.logger.warning(f"No improvement for {episodes_without_improvement} episodes. Consider:")
-                    logger.logger.warning("- Reducing learning rate")
-                    logger.logger.warning("- Increasing exploration")
-                    logger.logger.warning("- Checking reward function")
-                    logger.logger.warning("- Reducing update frequency")
-                    episodes_without_improvement = 0  # Reset counter
+                # Enhanced feedback when stuck with automatic adjustments
+                if episodes_without_improvement >= 20:
+                    logger.logger.warning(f"No improvement for {episodes_without_improvement} episodes.")
+                    logger.logger.warning("Auto-adjustments enabled: higher exploration, more frequent updates")
+
+                    # Reset counter less frequently to allow more aggressive exploration
+                    if episodes_without_improvement >= 30:
+                        episodes_without_improvement = 0  # Reset counter
 
             # Save checkpoint
+            print(episode, save_frequency, episode % save_frequency)
             if episode % save_frequency == 0:
                 logger.save_results(optimize_metric=logger.optimize_metric)
                 logger.generate_plots()
@@ -1588,12 +1894,12 @@ def train_rl_agent(
                         'recent_rewards': recent_rewards
                     }
 
-                    if hasattr(agent, 'value_net') and algorithm.lower() == "ppo":  # PPO
+                    if algorithm.lower() == "ppo":  # PPO
                         checkpoint.update({
                             'value_net': agent.value_net.state_dict(),
                             'value_optimizer': agent.value_optimizer.state_dict(),
                         })
-                    elif hasattr(agent, 'q1_net') and algorithm.lower() == "sac":  # SAC
+                    elif algorithm.lower() == "sac":  # SAC
                         checkpoint.update({
                             'q1_net': agent.q1_net.state_dict(),
                             'q2_net': agent.q2_net.state_dict(),
@@ -1628,6 +1934,8 @@ def train_rl_agent(
         logger.logger.info(f"Best parameters: {env.best_params}")
         logger.logger.info(f"Training device: {DEVICE}")
         logger.logger.info(get_gpu_memory_usage())
+
+
 
         # WHAT HAPPENED: The AI tried many different combinations of scheduler
         # parameters, learned which ones work better, and found the optimal settings!
@@ -1798,15 +2106,15 @@ Examples:
     parser.add_argument(
         "--learning-rate", "--lr",
         type=float,
-        default=3e-4,
-        help="Learning rate for RL agent (default: 3e-4)"
+        default=1e-3,
+        help="Learning rate for RL agent (default: 1e-3, increased for better convergence)"
     )
 
     parser.add_argument(
         "--update-frequency", "-u",
         type=int,
-        default=10,
-        help="Agent update frequency in episodes (default: 10)"
+        default=5,
+        help="Agent update frequency in episodes (default: 5, more frequent for faster learning)"
     )
 
     parser.add_argument(
@@ -1855,6 +2163,12 @@ Examples:
         help="Force CPU usage even if GPU is available"
     )
 
+    parser.add_argument(
+        "--pretrained-model",
+        type=str,
+        help="Path to pre-trained model checkpoint to load before training"
+    )
+
     args = parser.parse_args()
 
     # Setup basic logging
@@ -1882,7 +2196,8 @@ Examples:
                 save_frequency=args.save_frequency,
                 optimize_metric=args.optimize_metric,
                 reward_scaling=args.reward_scaling,
-                use_gpu=not args.no_gpu
+                use_gpu=not args.no_gpu,
+                pretrained_model_path=args.pretrained_model
             )
             return 0 if success else 1
 
