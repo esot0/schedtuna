@@ -1,0 +1,61 @@
+scheduler_name: scx_flashyspark
+workload_type: mixed
+
+# Optimize for balanced performance
+optimize_metric: pp_tokens_per_sec
+reward_scaling: 1.5
+
+# Scheduler parameters to optimize - balanced approach
+scheduler_params:
+  slice_us:
+    type: integer
+    default: 4096
+    min_value: 1024
+    max_value: 16384
+    description: Balanced time slice
+    command_arg: --slice-us
+  
+  slice_us_lag:
+    type: integer
+    default: 4096
+    min_value: 1024
+    max_value: 16384
+    description: Balanced sleep budget
+    command_arg: --slice-us-lag
+  
+  cpu_busy_thresh:
+    type: integer
+    default: 65
+    min_value: 40
+    max_value: 85
+    description: Balanced migration threshold
+    command_arg: --cpu-busy-thresh
+  
+  direct_dispatch:
+    type: boolean
+    default: false
+    description: Moderate direct dispatch
+    command_arg: --direct-dispatch
+  
+  sticky_cpu:
+    type: boolean
+    default: false
+    description: Balanced CPU affinity
+    command_arg: --sticky-cpu
+  
+  workload_aware_scheduling:
+    type: boolean
+    default: true
+    description: Enable adaptive scheduling
+    command_arg: --workload-aware-scheduling
+
+# Training configuration
+algorithm: sac
+episodes: 150
+baseline_runs: 8
+learning_rate: 7e-4
+update_frequency: 10
+save_frequency: 25
+
+# Mixed workload benchmark
+timeout: 200

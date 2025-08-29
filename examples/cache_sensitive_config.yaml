@@ -1,0 +1,53 @@
+scheduler_name: scx_flashyspark
+workload_type: cache_sensitive
+
+# Optimize for cache locality
+optimize_metric: pp_tokens_per_sec
+reward_scaling: 1.8
+
+# Scheduler parameters to optimize
+scheduler_params:
+  sticky_cpu:
+    type: boolean
+    default: true
+    description: Minimize CPU migrations for cache locality
+    command_arg: --sticky-cpu
+  
+  slice_us:
+    type: integer
+    default: 4096
+    min_value: 2048
+    max_value: 16384
+    description: Time slice in microseconds
+    command_arg: --slice-us
+  
+  cpu_busy_thresh:
+    type: integer
+    default: 85
+    min_value: 70
+    max_value: 95
+    description: High threshold to reduce migrations
+    command_arg: --cpu-busy-thresh
+  
+  no_wake_sync:
+    type: boolean
+    default: false
+    description: Preserve cache locality on sync wakeups
+    command_arg: --no-wake-sync
+  
+  local_pcpu:
+    type: boolean
+    default: true
+    description: Prioritize per-CPU tasks
+    command_arg: --local-pcpu
+
+# Training configuration
+algorithm: ppo
+episodes: 120
+baseline_runs: 5
+learning_rate: 8e-4
+update_frequency: 8
+save_frequency: 20
+
+# Benchmark focused on memory/cache performance
+timeout: 180

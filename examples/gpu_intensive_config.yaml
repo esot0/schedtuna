@@ -1,0 +1,53 @@
+scheduler_name: scx_flashyspark
+workload_type: gpu_intensive
+
+# Optimize for GPU coordination
+optimize_metric: pp_tokens_per_sec
+reward_scaling: 2.2
+
+# Scheduler parameters to optimize
+scheduler_params:
+  aggressive_gpu_tasks:
+    type: boolean
+    default: true
+    description: Prioritize GPU tasks on big cores
+    command_arg: --aggressive-gpu-tasks
+  
+  slice_us:
+    type: integer
+    default: 2048
+    min_value: 512
+    max_value: 8192
+    description: Short slices for GPU coordination
+    command_arg: --slice-us
+  
+  direct_dispatch:
+    type: boolean
+    default: true
+    description: Fast dispatch for GPU tasks
+    command_arg: --direct-dispatch
+  
+  cpu_busy_thresh:
+    type: integer
+    default: 60
+    min_value: 30
+    max_value: 80
+    description: Lower threshold for GPU task mobility
+    command_arg: --cpu-busy-thresh
+  
+  workload_aware_scheduling:
+    type: boolean
+    default: true
+    description: Enable workload-aware scheduling
+    command_arg: --workload-aware-scheduling
+
+# Training configuration
+algorithm: ppo
+episodes: 100
+baseline_runs: 5
+learning_rate: 1e-3
+update_frequency: 5
+save_frequency: 20
+
+# GPU-aware benchmark
+timeout: 120

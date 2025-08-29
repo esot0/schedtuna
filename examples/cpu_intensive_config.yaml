@@ -1,0 +1,49 @@
+scheduler_name: scx_flashyspark
+workload_type: cpu_intensive
+
+# Optimize for throughput-oriented workloads
+optimize_metric: tg_tokens_per_sec
+reward_scaling: 1.5
+
+# Scheduler parameters to optimize
+scheduler_params:
+  slice_us:
+    type: integer
+    default: 8192
+    min_value: 4096
+    max_value: 32768
+    description: Time slice in microseconds - longer for throughput
+    command_arg: --slice-us
+  
+  run_us_lag:
+    type: integer
+    default: 32768
+    min_value: 16384
+    max_value: 65536
+    description: Running penalty budget in microseconds
+    command_arg: --run-us-lag
+  
+  cpu_busy_thresh:
+    type: integer
+    default: 80
+    min_value: 60
+    max_value: 95
+    description: CPU utilization threshold - higher for stickiness
+    command_arg: --cpu-busy-thresh
+  
+  direct_dispatch:
+    type: boolean
+    default: true
+    description: Enable direct dispatch for throughput
+    command_arg: --direct-dispatch
+
+# Training configuration
+algorithm: sac
+episodes: 150
+baseline_runs: 5
+learning_rate: 5e-4
+update_frequency: 10
+save_frequency: 25
+
+# Benchmark configuration for CPU-intensive workload
+timeout: 300

@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, field
+from datetime import datetime
 import importlib
 
 try:
@@ -69,6 +70,11 @@ class OptimizerConfig:
     use_gpu: bool = True
     pretrained_model_path: Optional[str] = None
     
+    # Workload type to optimize for
+    workload_type: str = "latency_sensitive"
+    # Path to save/load optimized parameters
+    params_output_file: str = os.path.expanduser("~/rl_scx_params/optimized_params.json")
+    
     @classmethod
     def from_file(cls, config_path: Union[str, Path]) -> 'OptimizerConfig':
         """Load configuration from a YAML or JSON file."""
@@ -109,7 +115,9 @@ class OptimizerConfig:
             'reward_scaling': self.reward_scaling,
             'experiment_name': self.experiment_name,
             'use_gpu': self.use_gpu,
-            'pretrained_model_path': self.pretrained_model_path
+            'pretrained_model_path': self.pretrained_model_path,
+            'workload_type': self.workload_type,
+            'params_output_file': self.params_output_file
         }
         
         with open(config_path, 'w') as f:
@@ -122,6 +130,15 @@ class OptimizerConfig:
             else:
                 raise ValueError(f"Unsupported config format: {config_path.suffix}")
 
+
+WORKLOAD_TYPES = {
+    "unknown": 0,
+    "latency_sensitive": 1,
+    "cpu_intensive": 2,
+    "cache_sensitive": 3,
+    "gpu_intensive": 4,
+    "mixed": 5
+}
 
 class RLSchedulerOptimizer:
     """Main API class for optimizing scheduler parameters using RL."""
@@ -146,6 +163,11 @@ class RLSchedulerOptimizer:
             self.config = OptimizerConfig(**config)
         else:
             raise ValueError(f"Invalid config type: {type(config)}")
+        
+        # Validate workload type
+        if self.config.workload_type not in WORKLOAD_TYPES:
+            raise ValueError(f"Invalid workload type: {self.config.workload_type}. "
+                           f"Valid types: {list(WORKLOAD_TYPES.keys())}")
         
         self._setup_logging()
         
@@ -219,6 +241,26 @@ class RLSchedulerOptimizer:
             description="Custom scheduler configuration"
         )
     
+    def _load_params_file(self) -> Dict[str, Dict[str, Any]]:
+        """Load existing optimized parameters from JSON file."""
+        params_file = Path(self.config.params_output_file).expanduser()
+        if params_file.exists():
+            try:
+                with open(params_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                self.logger.warning(f"Failed to load existing params file: {e}")
+        return {}
+    
+    def _save_params_file(self, params_data: Dict[str, Dict[str, Any]]):
+        """Save optimized parameters to JSON file."""
+        params_file = Path(self.config.params_output_file).expanduser()
+        params_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(params_file, 'w') as f:
+            json.dump(params_data, f, indent=2)
+        self.logger.info(f"Saved optimized parameters to {params_file}")
+    
     def train(self, **kwargs) -> Dict[str, Any]:
         """Train the RL agent to optimize scheduler parameters.
         
@@ -252,15 +294,55 @@ class RLSchedulerOptimizer:
         config_dict.update(kwargs)
         
         self.logger.info(f"Starting training with {config_dict['algorithm']} for {config_dict['episodes']} episodes")
+        self.logger.info(f"Optimizing for workload type: {self.config.workload_type}")
+        
+        # If no experiment name provided, create one with workload type
+        if not config_dict.get('experiment_name'):
+            config_dict['experiment_name'] = f"{self.config.scheduler_name}_{self.config.workload_type}_{config_dict['algorithm']}_{config_dict['episodes']}ep"
         
         success = train_rl_agent(**config_dict)
         
         if not success:
             raise RuntimeError("Training failed")
         
+        # Load the best parameters from the experiment
+        output_dir = Path(os.path.expanduser("~/rl_experiments/fs_results"))
+        # Find the most recent experiment directory matching our experiment name
+        experiment_dirs = list(output_dir.glob(f"{config_dict['experiment_name']}_*"))
+        if not experiment_dirs:
+            raise RuntimeError(f"No experiment directory found for {config_dict['experiment_name']}")
+        
+        # Get the most recent experiment directory
+        latest_exp_dir = max(experiment_dirs, key=lambda p: p.stat().st_mtime)
+        best_params_file = latest_exp_dir / "best_parameters.json"
+        
+        if not best_params_file.exists():
+            raise RuntimeError(f"Best parameters file not found in {latest_exp_dir}")
+        
+        # Load the best parameters
+        with open(best_params_file, 'r') as f:
+            best_data = json.load(f)
+        
+        best_params = best_data.get('best_params', {})
+        best_reward = best_data.get('best_reward', 0)
+        
+        # Update the workload-specific parameters file
+        all_params = self._load_params_file()
+        all_params[self.config.workload_type] = {
+            'parameters': best_params,
+            'reward': best_reward,
+            'optimize_metric': config_dict['optimize_metric'],
+            'experiment_path': str(latest_exp_dir),
+            'timestamp': datetime.now().isoformat()
+        }
+        self._save_params_file(all_params)
+        
         return {
             'success': True,
-            'config': config_dict
+            'config': config_dict,
+            'best_params': best_params,
+            'best_reward': best_reward,
+            'experiment_path': str(latest_exp_dir)
         }
     
     def test(self, experiment_path: str, test_runs: int = 10) -> Dict[str, Any]:
