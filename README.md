@@ -1,4 +1,4 @@
-# Generalized Scheduler Parameter Optimizer
+# Scheduler Parameter Optimizer
 
 A comprehensive reinforcement learning framework for optimizing Linux scheduler parameters across multiple scheduler types and parameter configurations.
 
