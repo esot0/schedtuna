@@ -1,37 +1,14 @@
-#!/home/nvidia/rl_experiments/venv/bin/python3
+#!/usr/bin/env python3
 """
-Reinforcement Learning Optimizer for scx_flashyspark Scheduler Parameters
-========================================================================
+Reinforcement Learning Optimizer for Linux Scheduler Parameters
+==============================================================
 
-WHAT THIS PROGRAM DOES:
-This program uses Artificial Intelligence (specifically "Reinforcement Learning")
-to automatically find the best settings for a Linux scheduler called "scx_flashyspark".
+An extensible framework for optimizing sched-ext scheduler parameters using reinforcement learning.
 
-Think of it like having an AI assistant that:
-1. Tries different combinations of scheduler settings
-2. Runs performance tests to see how fast the system runs
-3. Learns which settings work better than others
-4. Gradually gets better at picking good settings
-5. Eventually finds the optimal configuration
-
-REINFORCEMENT LEARNING EXPLAINED:
-- Reinforcement Learning (RL) is like training a pet with rewards and punishments
-- The AI "agent" tries different actions (scheduler settings)
-- It gets "rewards" for good performance and "penalties" for bad performance
-- Over time, it learns to pick actions that get higher rewards
-- This is similar to how humans learn - through trial and error with feedback
-
-KEY CONCEPTS:
-- Agent: The AI that makes decisions about which settings to try
-- Environment: The computer system running the scheduler and benchmarks
-- State: Current information about system performance and settings
-- Action: A choice of scheduler parameter values to test
-- Reward: A score based on how well the system performed
-- Episode: One complete test of a set of parameters
 
 Usage:
-    python rl_experiments/main.py --algorithm ppo --episodes 100
-    python rl_experiments/main.py --algorithm sac --episodes 50 --baseline-runs 3
+    python main.py --scheduler scx_flashyspark --algorithm ppo --episodes 100
+    python main.py --scheduler scx_rusty --algorithm sac --episodes 50
 """
 
 import os
@@ -52,25 +29,23 @@ import signal
 import atexit
 import random
 
-# Add the scripts directory to the Python path
-sys.path.insert(0, '/home/nvidia/scripts')
+# Add common script directories to Python path
+script_paths = ['scripts', '../scripts', os.path.expanduser('~/scripts')]
+for path in script_paths:
+    if os.path.exists(path):
+        sys.path.insert(0, path)
 
-# GPU Memory Management Utilities
 def setup_gpu_optimizations():
-    """Setup GPU optimizations for better performance"""
+    """Setup GPU optimizations"""
     if not HAS_ML_LIBS or DEVICE is None or DEVICE.type != "cuda":
         return
 
     try:
-        # Clear cache to start fresh
         torch.cuda.empty_cache()
-
-        # Enable cuDNN auto-tuning for better performance
         torch.backends.cudnn.benchmark = True
-
-        # Set memory fraction to prevent OOM (use 90% of available memory)
+        
         total_memory = torch.cuda.get_device_properties(0).total_memory
-        reserved_memory = int(total_memory * 0.1)  # Reserve 10%
+        reserved_memory = int(total_memory * 0.1)
         torch.cuda.set_per_process_memory_fraction(0.9)
 
         print(f"GPU optimizations enabled:")
@@ -143,7 +118,6 @@ try:
 except ImportError:
     HAS_PANDAS = False
 
-# Import our benchmark utility functions
 try:
     from parse_benchmark_results import BenchmarkResultsParser
 except ImportError:
@@ -151,98 +125,268 @@ except ImportError:
     BenchmarkResultsParser = None
 
 
+from enum import Enum
+from typing import Union, Dict, Any, List
+
+class ParameterType(Enum):
+    """Supported parameter types for scheduler configuration."""
+    BOOLEAN = "boolean"
+    INTEGER = "integer"
+    FLOAT = "float"
+    CATEGORICAL = "categorical"
+
 @dataclass
+class ParameterSpec:
+    """Specification for a scheduler parameter."""
+    name: str
+    param_type: ParameterType
+    default: Any
+    min_value: Optional[Any] = None
+    max_value: Optional[Any] = None
+    choices: Optional[List[Any]] = None
+    description: str = ""
+    command_arg: Optional[str] = None  # Command line argument format
+
+@dataclass
+class SchedulerConfig:
+    """Configuration for a specific scheduler type."""
+    name: str
+    binary_path: str
+    parameters: Dict[str, ParameterSpec]
+    description: str = ""
+
 class SchedulerParams:
     """
-    WHAT THIS IS: A container for all the settings we can adjust in the scheduler
-
-    Think of this like the "control panel" for the scheduler with various switches/knobs.
-    Each parameter is like a toggle switch that can be ON (True) or OFF (False).
-
-    The AI will try different combinations of these switches to see which ones
-    make the system run faster. There are 14 different switches, so there are
-    2^14 = 16,384 possible combinations to explore!
-
-    WHAT EACH SETTING DOES (in simple terms):
+    Generalized container for scheduler parameters supporting multiple types.
+    
+    This class can handle:
+    - Boolean flags (on/off switches)
+    - Integer values (numeric ranges)
+    - Float values (continuous ranges)
+    - Categorical choices (predefined options)
     """
-    # Boolean flags for scheduler behavior (True = ON, False = OFF)
-    slice_lag_scaling: bool = False    # Adjust timing based on system load
-    rr_sched: bool = False            # Share CPU time equally between tasks
-    no_builtin_idle: bool = False     # Disable automatic CPU selection
-    local_pcpu: bool = False          # Prioritize certain types of tasks
-    direct_dispatch: bool = False     # Skip the scheduling queue sometimes
-    sticky_cpu: bool = False          # Keep tasks on the same CPU core
-    stay_with_kthread: bool = False   # Keep tasks near kernel threads
-    native_priority: bool = False     # Use Linux's default task priorities
-    local_kthreads: bool = False      # Prioritize system tasks per CPU
-    no_wake_sync: bool = False        # Change how tasks wake up other tasks
-    aggressive_gpu_tasks: bool = False # Give GPU tasks the fastest CPU cores
-    timer_kick: bool = False          # Use different timing mechanism
-    params = {}
+    
+    def __init__(self, scheduler_config: SchedulerConfig, **kwargs):
+        self.scheduler_config = scheduler_config
+        self.values = {}
+        
+        for param_name, param_spec in scheduler_config.parameters.items():
+            self.values[param_name] = param_spec.default
+        
+        # Override with provided values
+        for key, value in kwargs.items():
+            if key in self.scheduler_config.parameters:
+                self.values[key] = self._validate_parameter(key, value)
+            else:
+                raise ValueError(f"Unknown parameter: {key}")
+    
+    def _validate_parameter(self, name: str, value: Any) -> Any:
+        """Validate and convert parameter value according to its specification."""
+        spec = self.scheduler_config.parameters[name]
+        
+        if spec.param_type == ParameterType.BOOLEAN:
+            return bool(value)
+        elif spec.param_type == ParameterType.INTEGER:
+            val = int(value)
+            if spec.min_value is not None and val < spec.min_value:
+                raise ValueError(f"{name} must be >= {spec.min_value}")
+            if spec.max_value is not None and val > spec.max_value:
+                raise ValueError(f"{name} must be <= {spec.max_value}")
+            return val
+        elif spec.param_type == ParameterType.FLOAT:
+            val = float(value)
+            if spec.min_value is not None and val < spec.min_value:
+                raise ValueError(f"{name} must be >= {spec.min_value}")
+            if spec.max_value is not None and val > spec.max_value:
+                raise ValueError(f"{name} must be <= {spec.max_value}")
+            return val
+        elif spec.param_type == ParameterType.CATEGORICAL:
+            if spec.choices and value not in spec.choices:
+                raise ValueError(f"{name} must be one of {spec.choices}")
+            return value
+        else:
+            raise ValueError(f"Unsupported parameter type: {spec.param_type}")
+    
+    def __getattr__(self, name: str) -> Any:
+        """Allow attribute-style access to parameter values."""
+        if name in self.values:
+            return self.values[name]
+        raise AttributeError(f"No parameter named '{name}'")
+    
+    def __setattr__(self, name: str, value: Any):
+        """Allow attribute-style setting of parameter values."""
+        if name in ['scheduler_config', 'values']:
+            super().__setattr__(name, value)
+        elif hasattr(self, 'scheduler_config') and name in self.scheduler_config.parameters:
+            self.values[name] = self._validate_parameter(name, value)
+        else:
+            super().__setattr__(name, value)
 
-    # def __init__(self, **kwargs):
-    #     # Initialize all parameters with default values first
-    #     self.slice_lag_scaling = False
-    #     self.rr_sched = False
-    #     self.no_builtin_idle = False
-    #     self.local_pcpu = False
-    #     self.direct_dispatch = False
-    #     self.sticky_cpu = False
-    #     self.stay_with_kthread = False
-    #     self.native_priority = False
-    #     self.local_kthreads = False
-    #     self.no_wake_sync = False
-    #     self.aggressive_gpu_tasks = False
-    #     self.timer_kick = False
-    #     self.params = {}
-
-    #     # Now update with provided kwargs
-    #     for key, value in kwargs.items():
-    #         if hasattr(self, key):
-    #             setattr(self, key, value)
-    #             self.params[key] = value
-    #         else:
-    #             raise ValueError(f"Invalid parameter: {key}")
 
     def __hash__(self):
-        return hash(json.dumps(asdict(self), indent=4))
+        return hash(json.dumps(self.values, sort_keys=True))
 
     def __eq__(self, other):
-        return hash(self) == hash(other)
+        if not isinstance(other, SchedulerParams):
+            return False
+        return self.values == other.values
 
     def __str__(self):
-        return json.dumps(asdict(self), indent=4, sort_keys=True)
+        return json.dumps(self.values, indent=2, sort_keys=True)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert parameters to dictionary."""
+        return self.values.copy()
 
-    def _to_command_args(self) -> List[str]:
-        """Convert parameters to command line arguments for scx_flashyspark"""
+    def to_command_args(self) -> List[str]:
+        """Convert parameters to command line arguments."""
         args = []
-
-        # Add boolean flags
-        if self.slice_lag_scaling:
-            args.append("--slice-lag-scaling")
-        if self.rr_sched:
-            args.append("--rr-sched")
-        if self.no_builtin_idle:
-            args.append("--no-builtin-idle")
-        if self.local_pcpu:
-            args.append("--local-pcpu")
-        if self.direct_dispatch:
-            args.append("--direct-dispatch")
-        if self.sticky_cpu:
-            args.append("--sticky-cpu")
-        if self.stay_with_kthread:
-            args.append("--stay-with-kthread")
-        if self.native_priority:
-            args.append("--native-priority")
-        if self.local_kthreads:
-            args.append("--local-kthreads")
-        if self.no_wake_sync:
-            args.append("--no-wake-sync")
-        if self.aggressive_gpu_tasks:
-            args.append("--aggressive-gpu-tasks")
-        if self.timer_kick:
-            args.append("--timer-kick")
+        
+        for param_name, value in self.values.items():
+            spec = self.scheduler_config.parameters[param_name]
+            
+            if spec.command_arg is None:
+                continue  # Skip parameters without command line representation
+            
+            if spec.param_type == ParameterType.BOOLEAN:
+                if value:
+                    args.append(spec.command_arg)
+            elif spec.param_type in [ParameterType.INTEGER, ParameterType.FLOAT, ParameterType.CATEGORICAL]:
+                args.extend([spec.command_arg, str(value)])
+        
         return args
+
+# Scheduler Configurations
+def get_scx_flashyspark_config() -> SchedulerConfig:
+    """Get configuration for scx_flashyspark scheduler."""
+    parameters = {
+        'slice_lag_scaling': ParameterSpec(
+            'slice_lag_scaling', ParameterType.BOOLEAN, False,
+            description="Dynamic slice lag scaling based on CPU utilization",
+            command_arg="--slice-lag-scaling"
+        ),
+        'rr_sched': ParameterSpec(
+            'rr_sched', ParameterType.BOOLEAN, False,
+            description="Round-robin scheduling with fixed time slices",
+            command_arg="--rr-sched"
+        ),
+        'no_builtin_idle': ParameterSpec(
+            'no_builtin_idle', ParameterType.BOOLEAN, False,
+            description="Disable in-kernel idle CPU selection policy",
+            command_arg="--no-builtin-idle"
+        ),
+        'local_pcpu': ParameterSpec(
+            'local_pcpu', ParameterType.BOOLEAN, False,
+            description="Enable prioritization of per-CPU tasks",
+            command_arg="--local-pcpu"
+        ),
+        'direct_dispatch': ParameterSpec(
+            'direct_dispatch', ParameterType.BOOLEAN, False,
+            description="Always allow direct dispatch to idle CPUs",
+            command_arg="--direct-dispatch"
+        ),
+        'sticky_cpu': ParameterSpec(
+            'sticky_cpu', ParameterType.BOOLEAN, False,
+            description="Enable CPU stickiness to reduce task migrations",
+            command_arg="--sticky-cpu"
+        ),
+        'stay_with_kthread': ParameterSpec(
+            'stay_with_kthread', ParameterType.BOOLEAN, False,
+            description="Keep tasks on CPUs where kthreads are running",
+            command_arg="--stay-with-kthread"
+        ),
+        'native_priority': ParameterSpec(
+            'native_priority', ParameterType.BOOLEAN, False,
+            description="Use native Linux priority range instead of normalization",
+            command_arg="--native-priority"
+        ),
+        'local_kthreads': ParameterSpec(
+            'local_kthreads', ParameterType.BOOLEAN, False,
+            description="Enable per-CPU kthread prioritization",
+            command_arg="--local-kthreads"
+        ),
+        'no_wake_sync': ParameterSpec(
+            'no_wake_sync', ParameterType.BOOLEAN, False,
+            description="Disable direct dispatch during synchronous wakeups",
+            command_arg="--no-wake-sync"
+        ),
+        'aggressive_gpu_tasks': ParameterSpec(
+            'aggressive_gpu_tasks', ParameterType.BOOLEAN, False,
+            description="GPU task mode - only GPU tasks can use big/performance cores",
+            command_arg="--aggressive-gpu-tasks"
+        ),
+        'timer_kick': ParameterSpec(
+            'timer_kick', ParameterType.BOOLEAN, False,
+            description="Use BPF timer instead of scx_kick_cpu for task kicking",
+            command_arg="--timer-kick"
+        ),
+        # Example non-binary parameters
+        'slice_us': ParameterSpec(
+            'slice_us', ParameterType.INTEGER, 20000,
+            min_value=1000, max_value=100000,
+            description="Base time slice duration in microseconds",
+            command_arg="--slice-us"
+        ),
+        'cpu_util_threshold': ParameterSpec(
+            'cpu_util_threshold', ParameterType.FLOAT, 0.85,
+            min_value=0.1, max_value=1.0,
+            description="CPU utilization threshold for load balancing",
+            command_arg="--cpu-util-threshold"
+        ),
+        'scheduling_policy': ParameterSpec(
+            'scheduling_policy', ParameterType.CATEGORICAL, 'default',
+            choices=['default', 'performance', 'powersave', 'latency'],
+            description="Overall scheduling policy mode",
+            command_arg="--policy"
+        )
+    }
+    
+    return SchedulerConfig(
+        name="scx_flashyspark",
+        binary_path=os.path.expanduser("~/bin/scx_flashyspark"),
+        parameters=parameters,
+        description="Flashy Spark scheduler with comprehensive parameter support"
+    )
+
+def get_scx_rusty_config() -> SchedulerConfig:
+    """Get configuration for scx_rusty scheduler (example)."""
+    parameters = {
+        'direct': ParameterSpec(
+            'direct', ParameterType.BOOLEAN, False,
+            description="Enable direct dispatch",
+            command_arg="--direct"
+        ),
+        'kick': ParameterSpec(
+            'kick', ParameterType.BOOLEAN, False,
+            description="Enable kicking",
+            command_arg="--kick"
+        ),
+        'slice_us': ParameterSpec(
+            'slice_us', ParameterType.INTEGER, 20000,
+            min_value=1000, max_value=50000,
+            description="Time slice in microseconds",
+            command_arg="--slice-us"
+        )
+    }
+    
+    return SchedulerConfig(
+        name="scx_rusty",
+        binary_path=os.path.expanduser("~/bin/scx_rusty"),
+        parameters=parameters,
+        description="Rusty scheduler with basic parameter support"
+    )
+
+def get_scheduler_config(scheduler_name: str) -> SchedulerConfig:
+    """Get configuration for the specified scheduler."""
+    configs = {
+        'scx_flashyspark': get_scx_flashyspark_config,
+        'scx_rusty': get_scx_rusty_config,
+    }
+    
+    if scheduler_name not in configs:
+        raise ValueError(f"Unsupported scheduler: {scheduler_name}. Available: {list(configs.keys())}")
+    
+    return configs[scheduler_name]()
 
 class ParamWrapper:
     @staticmethod
@@ -291,21 +435,22 @@ class ParamWrapper:
             f.write(str(attempted_combinations))
 
     @staticmethod
-    def list_all_combinations(params: list[str] = []):
+    def list_all_combinations(scheduler_config: SchedulerConfig):
         from itertools import product
-        """List all possible combinations of the boolean parameters"""
-                # Use the same boolean parameter list as defined in FlashySparkEnvironment
+        """List all possible combinations for boolean parameters of a scheduler."""
+        # Get only boolean parameters
         bool_params = [
-            'slice_lag_scaling', 'rr_sched', 'no_builtin_idle',
-            'local_pcpu', 'direct_dispatch', 'sticky_cpu', 'stay_with_kthread',
-            'native_priority', 'local_kthreads', 'no_wake_sync', 'aggressive_gpu_tasks',
-            'timer_kick'
+            name for name, spec in scheduler_config.parameters.items()
+            if spec.param_type == ParameterType.BOOLEAN
         ]
+        
+        if not bool_params:
+            return set()
 
         all_combinations = set()
         for p in product([True, False], repeat=len(bool_params)):
             param_dict = dict(zip(bool_params, p))
-            key = json.dumps(param_dict, indent=4, sort_keys=True)
+            key = json.dumps(param_dict, sort_keys=True)
             all_combinations.add(key)
         return all_combinations
 
@@ -362,43 +507,22 @@ class ParamWrapper:
 
 @dataclass
 class BenchmarkResult:
-    """
-    WHAT THIS IS: The results from testing how fast the system runs
-
-    When we test a set of scheduler parameters, we run a benchmark (performance test)
-    to see how fast the system can process text using a language model (like ChatGPT).
-    This class stores all the information about how that test went.
-
-    WHAT THE METRICS MEAN:
-    - pp_tokens_per_sec: How fast we can process prompts (input text)
-    - tg_tokens_per_sec: How fast we can generate responses (output text)
-    - Higher numbers = better performance = faster system
-
-    Think of it like testing a car: pp speed is how fast it accelerates,
-    tg speed is how fast it can cruise. We want both to be as high as possible!
-    """
-    pp_tokens_per_sec: float = 0.0    # Prompt processing speed (higher = better)
-    tg_tokens_per_sec: float = 0.0    # Text generation speed (higher = better)
-    success: bool = False             # Did the test complete without errors?
-    error_msg: str = ""               # What went wrong if it failed?
-    raw_output: str = ""              # The raw text output from the benchmark
-    execution_time: float = 0.0       # How long the test took to run
+    """Benchmark performance metrics"""
+    pp_tokens_per_sec: float = 0.0    # Prompt processing speed
+    tg_tokens_per_sec: float = 0.0    # Text generation speed
+    success: bool = False
+    error_msg: str = ""
+    raw_output: str = ""
+    execution_time: float = 0.0
 
     def get_reward(self, optimize_metric: str = "pp", baseline_pp: Optional[float] = None,
                    baseline_tg: Optional[float] = None, params: Optional['SchedulerParams'] = None,
                    reward_scaling: float = 1.0) -> float:
         """
-        ENHANCED REWARD FUNCTION: Calculates a more informative "reward score" for the AI
-
-        This enhanced version provides stronger gradients and better discrimination
-        between configurations to help the RL agent learn more effectively.
-
-        Args:
-            optimize_metric: Whether to focus on "pp" (prompt) or "tg" (text generation) speed
-            baseline_pp: Baseline PP performance for normalization
-            baseline_tg: Baseline TG performance for normalization
-            params: The scheduler settings that were tested
-            reward_scaling: Multiplier to make rewards more/less extreme
+        Calculate reward score based on performance metrics.
+        
+        Uses relative performance vs baseline with additional bonuses/penalties
+        for absolute performance thresholds and execution time.
         """
         if not self.success:
             # Graduated penalties based on error type
@@ -417,9 +541,9 @@ class BenchmarkResult:
         pp_ratio = self.pp_tokens_per_sec / pp_baseline
         tg_ratio = self.tg_tokens_per_sec / tg_baseline
 
-        # Use logarithmic scaling for better gradient discrimination
-        # This provides stronger signals for improvements and avoids reward plateaus
-        pp_log_reward = np.log(max(pp_ratio, 0.1)) * 50.0  # Log scaling amplifies differences
+        # Logarithmic scaling
+
+        pp_log_reward = np.log(max(pp_ratio, 0.1)) * 50.0
         tg_log_reward = np.log(max(tg_ratio, 0.1)) * 50.0
 
         # Weight the primary metric more heavily
@@ -441,9 +565,8 @@ class BenchmarkResult:
                 base_reward += 5.0     # Medium bonus for fast execution
             elif self.execution_time > 9.45:
                 base_reward -= 10.0    # Penalty for slow execution
- # Higher penalty for very slow execution
 
-        # Bonus for achieving high absolute performance (not just relative)
+
         absolute_performance_bonus = 0.0
         if self.pp_tokens_per_sec > pp_baseline * 1.1:  # 10% improvement
             absolute_performance_bonus += 15.0
@@ -459,9 +582,6 @@ class BenchmarkResult:
 
         # Apply scaling
         final_reward = base_reward * reward_scaling
-
-        # More conservative clipping to prevent extreme values while preserving gradients
-        #final_reward = max(-300.0, min(300.0, final_reward))
 
         return final_reward
 
@@ -503,41 +623,40 @@ class BenchmarkResult:
         return bonus
 
 
-class FlashySparkEnvironment(gym.Env):
+class SchedulerEnvironment(gym.Env):
     """
-    WHAT THIS IS: The "Environment" where the AI operates
-
-    In reinforcement learning, we need an "environment" for the AI agent to interact with.
-    Think of this like a video game world or a simulation where the AI can take actions
-    and see what happens.
-
-    OUR ENVIRONMENT IS:
-    - The computer system running the scheduler
-    - The AI can change scheduler settings (actions)
-    - The AI observes performance metrics (state)
-    - The AI gets reward/penalty based on performance
-
-    ANALOGY: Imagine teaching someone to drive a car
-    - Environment = the car and road
-    - Actions = steering wheel, gas pedal, brake
-    - State = speed, direction, obstacles ahead
-    - Reward = +1 for staying on road, -10 for crashing
-
-    OUR VERSION:
-    - Actions = choosing scheduler parameter combinations
-    - State = current performance metrics and settings
-    - Reward = based on how fast the system runs
-    - Goal = find the parameter combination that makes the system fastest
+    Generalized RL Environment for Scheduler Parameter Optimization
+    
+    This environment provides a flexible framework for optimizing scheduler parameters
+    using reinforcement learning. It supports multiple scheduler types and mixed
+    parameter types (boolean, integer, float, categorical).
+    
+    Key Features:
+    - Multi-scheduler support through SchedulerConfig
+    - Mixed parameter types with proper normalization
+    - Flexible benchmark integration
+    - Comprehensive state representation
+    - Robust error handling and cleanup
     """
 
-    def __init__(self, model_path: Optional[str] = None, timeout: int = 300, optimize_metric: str = "pp_tokens_per_sec", reward_scaling: float = 1.0):
+    def __init__(self, 
+                 scheduler_name: str = "scx_flashyspark",
+                 model_path: Optional[str] = None, 
+                 benchmark_cmd: Optional[str] = None,
+                 timeout: int = 300, 
+                 optimize_metric: str = "pp_tokens_per_sec", 
+                 reward_scaling: float = 1.0):
         super().__init__()
-
-        self.model_path = model_path or "/home/nvidia/llama.cpp/models/Llama-3.2-1B-Instruct-Q6_K.gguf"
-        self.llama_bench = "/home/nvidia/llama.cpp/build/bin/llama-bench"
-        self.scheduler_path = "/home/nvidia/bin/scx_flashyspark"
+        
+        # Scheduler configuration
+        self.scheduler_config = get_scheduler_config(scheduler_name)
+        self.scheduler_name = scheduler_name
+        
+        # Benchmark configuration
+        self.model_path = model_path or os.path.expanduser("~/llama.cpp/models/Llama-3.2-1B-Instruct-Q6_K.gguf")
+        self.benchmark_cmd = benchmark_cmd or os.path.expanduser("~/llama.cpp/build/bin/llama-bench")
         self.timeout = timeout
-        self.optimize_metric = optimize_metric  # "pp" or "tg"
+        self.optimize_metric = optimize_metric
         self.reward_scaling = reward_scaling
 
         # Track current scheduler process for cleanup
@@ -551,32 +670,30 @@ class FlashySparkEnvironment(gym.Env):
         self.fixed_baseline_tg = None
         self.baseline_calculated = False
 
-        # Boolean parameters only (12 parameters)
-        self.bool_params = [
-            'slice_lag_scaling', 'rr_sched', 'no_builtin_idle',
-            'local_pcpu', 'direct_dispatch', 'sticky_cpu', 'stay_with_kthread',
-            'native_priority', 'local_kthreads', 'no_wake_sync', 'aggressive_gpu_tasks',
-             'timer_kick',
-        ]
-
-        # Define action space: discrete values for boolean flags only
-        # 13 boolean parameters
+        # Analyze parameter space
+        self.param_specs = list(self.scheduler_config.parameters.values())
+        self.param_names = list(self.scheduler_config.parameters.keys())
+        
+        # Calculate action space dimensions
+        action_dim = len(self.param_specs)
+        
+        # Define action space: normalized values for all parameters
         self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(12,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(action_dim,), dtype=np.float32
         )
 
-        # Observation space: current parameters + recent performance metrics
-        # 12 params + 5 performance metrics (reward, pp_tokens/s, tg_tokens/s, success_rate, execution_time)
+        # Observation space: normalized parameters + performance metrics
+        obs_dim = action_dim + 5  # params + 5 performance metrics
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(17,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32
         )
 
         # Performance history for observation state (but NOT for baseline calculation)
         self.performance_history = []
         self.max_history = 10
 
-        # Simple parameter combination tracking
-        self.unattempted_params = ParamWrapper.list_unattempted_combinations()  # Store SchedulerParams objects for ParamWrapper.save_attempted_combinations
+        # Parameter combination tracking
+        self.unattempted_params = ParamWrapper.list_unattempted_combinations(self.scheduler_config)
 
         # Setup signal handlers for cleanup
         self._setup_cleanup()
@@ -613,26 +730,74 @@ class FlashySparkEnvironment(gym.Env):
             pass
 
     def _normalize_params(self, params: SchedulerParams) -> np.ndarray:
-        """Normalize scheduler parameters to [-1, 1] range"""
+        """Normalize scheduler parameters to [-1, 1] range."""
         normalized = []
-
-        # Add boolean parameters as -1/1
-        for param_name in self.bool_params:
-            value = getattr(params, param_name)
-            normalized.append(1.0 if value else -1.0)
-
+        
+        for param_name in self.param_names:
+            spec = self.scheduler_config.parameters[param_name]
+            value = params.values[param_name]
+            
+            if spec.param_type == ParameterType.BOOLEAN:
+                normalized.append(1.0 if value else -1.0)
+            elif spec.param_type == ParameterType.INTEGER:
+                # Normalize integer to [-1, 1] range
+                if spec.min_value is not None and spec.max_value is not None:
+                    norm_val = 2.0 * (value - spec.min_value) / (spec.max_value - spec.min_value) - 1.0
+                else:
+                    norm_val = np.tanh(value / 10000.0)  # Fallback normalization
+                normalized.append(norm_val)
+            elif spec.param_type == ParameterType.FLOAT:
+                # Normalize float to [-1, 1] range
+                if spec.min_value is not None and spec.max_value is not None:
+                    norm_val = 2.0 * (value - spec.min_value) / (spec.max_value - spec.min_value) - 1.0
+                else:
+                    norm_val = np.tanh(value)  # Fallback normalization
+                normalized.append(norm_val)
+            elif spec.param_type == ParameterType.CATEGORICAL:
+                # One-hot encoding for categorical (simplified to single value for now)
+                if spec.choices:
+                    choice_idx = spec.choices.index(value) if value in spec.choices else 0
+                    norm_val = 2.0 * choice_idx / (len(spec.choices) - 1) - 1.0 if len(spec.choices) > 1 else 0.0
+                else:
+                    norm_val = 0.0
+                normalized.append(norm_val)
+        
         return np.array(normalized, dtype=np.float32)
 
     def _denormalize_action(self, action: np.ndarray) -> SchedulerParams:
-        """Convert normalized action to SchedulerParams"""
-        params = SchedulerParams()
-
-        # Set boolean parameters
-        for i, param_name in enumerate(self.bool_params):
-            value = action[i] > 0.0  # Convert to boolean
-            setattr(params, param_name, value)
-
-        return params
+        """Convert normalized action to SchedulerParams."""
+        param_values = {}
+        
+        for i, param_name in enumerate(self.param_names):
+            spec = self.scheduler_config.parameters[param_name]
+            norm_value = action[i]
+            
+            if spec.param_type == ParameterType.BOOLEAN:
+                param_values[param_name] = norm_value > 0.0
+            elif spec.param_type == ParameterType.INTEGER:
+                if spec.min_value is not None and spec.max_value is not None:
+                    # Denormalize from [-1, 1] to [min_value, max_value]
+                    denorm_val = (norm_value + 1.0) / 2.0 * (spec.max_value - spec.min_value) + spec.min_value
+                    param_values[param_name] = int(round(denorm_val))
+                else:
+                    param_values[param_name] = int(round(norm_value * 10000.0))  # Fallback
+            elif spec.param_type == ParameterType.FLOAT:
+                if spec.min_value is not None and spec.max_value is not None:
+                    # Denormalize from [-1, 1] to [min_value, max_value]
+                    denorm_val = (norm_value + 1.0) / 2.0 * (spec.max_value - spec.min_value) + spec.min_value
+                    param_values[param_name] = denorm_val
+                else:
+                    param_values[param_name] = float(norm_value)  # Fallback
+            elif spec.param_type == ParameterType.CATEGORICAL:
+                if spec.choices:
+                    # Convert normalized value back to choice index
+                    choice_idx = int(round((norm_value + 1.0) / 2.0 * (len(spec.choices) - 1)))
+                    choice_idx = max(0, min(choice_idx, len(spec.choices) - 1))
+                    param_values[param_name] = spec.choices[choice_idx]
+                else:
+                    param_values[param_name] = spec.default
+        
+        return SchedulerParams(self.scheduler_config, **param_values)
 
     def _get_observation(self, params: SchedulerParams) -> np.ndarray:
         """Get current observation state"""
@@ -663,14 +828,14 @@ class FlashySparkEnvironment(gym.Env):
         return np.array(obs, dtype=np.float32)
 
     def reset(self, seed=None, options=None):
-        """Reset environment to start of new episode"""
+        """Reset environment to start of new episode."""
         super().reset(seed=seed)
 
         self._cleanup()  # Ensure clean state
         self.episode_count += 1
 
         # Start with default parameters
-        default_params = SchedulerParams()
+        default_params = SchedulerParams(self.scheduler_config)
         observation = self._get_observation(default_params)
 
         return observation, {}
@@ -748,7 +913,7 @@ class FlashySparkEnvironment(gym.Env):
             print(f"Testing parameters: {params}")
 
             # Start scheduler with parameters
-            scheduler_cmd = ["sudo", self.scheduler_path] + params._to_command_args()
+            scheduler_cmd = ["sudo", self.scheduler_config.binary_path] + params.to_command_args()
             print(f"Starting scheduler: {' '.join(scheduler_cmd)}")
 
             start_time = time.time()
@@ -771,10 +936,10 @@ class FlashySparkEnvironment(gym.Env):
                 result.execution_time = time.time() - start_time
                 return result
 
-            # Run llama-bench
-            print("Running llama-bench...")
+            # Run benchmark
+            print("Running benchmark...")
             bench_result = subprocess.run(
-                [self.llama_bench, "-m", self.model_path],
+                [self.benchmark_cmd, "-m", self.model_path],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout
@@ -845,8 +1010,6 @@ class FlashySparkEnvironment(gym.Env):
                     tokens_per_sec_str = parts[7].strip()  # t/s column
 
 
-                    # Extract numeric value (ignore ± error if present)
-                    # Look for pattern like "10142.17 ± 193.31" or just "10142.17"
                     match = re.search(r'(\d+(?:\.\d+)?)', tokens_per_sec_str)
                     if match:
                         tokens_per_sec = float(match.group(1))
@@ -912,36 +1075,9 @@ class FlashySparkEnvironment(gym.Env):
         return best_match
 
 
-# ============================================================================
-# NEURAL NETWORK CLASSES - THE AI'S "BRAIN"
-# ============================================================================
 
 class MLPNetwork(nn.Module):
-    """
-    WHAT THIS IS: The AI's "brain" - a neural network with GPU acceleration
-
-    A neural network is loosely inspired by how neurons work in a real brain.
-    It's made of layers of artificial "neurons" that process information.
-
-    HOW IT WORKS:
-    1. Input layer receives information (like performance metrics)
-    2. Hidden layers process and transform that information
-    3. Output layer produces decisions (like which parameters to try)
-
-    ANALOGY: Think of it like a decision-making committee:
-    - Input layer = information gatherers
-    - Hidden layers = advisors who discuss and analyze
-    - Output layer = final decision makers
-
-    Each "neuron" is like a person who:
-    - Receives information from others
-    - Applies their own judgment (weights/biases)
-    - Passes their conclusion to the next layer
-
-    The AI learns by adjusting these "judgments" based on rewards/penalties.
-
-    GPU ACCELERATION: When available, all computations run on GPU for 5-10x speedup!
-    """
+    """Multi-layer perceptron for policy/value function approximation"""
 
     def __init__(self, input_dim: int, output_dim: int, hidden_dims: List[int] = [256, 256], device=None):
         super().__init__()
@@ -976,32 +1112,10 @@ class MLPNetwork(nn.Module):
 
 class PPOAgent:
     """
-    WHAT THIS IS: One type of AI algorithm called "PPO" (Proximal Policy Optimization) with GPU acceleration
-
-    PPO is a specific method for training AI agents. Think of it as a "learning strategy"
-    that tells the AI how to improve based on experience.
-
-    WHY PPO IS GOOD:
-    - Stable: doesn't make wild changes that break learning
-    - Efficient: learns from experience without wasting data
-    - Proven: works well for many different types of problems
-
-    HOW PPO WORKS (simplified):
-    1. Try some actions and see what rewards you get
-    2. Figure out which actions led to good rewards
-    3. Adjust your decision-making to do more of the good actions
-    4. But don't change too drastically at once (that's the "proximal" part)
-
-    THE AI HAS TWO "BRAINS":
-    1. Policy Network: "What action should I take?" (the decision maker)
-    2. Value Network: "How good is my current situation?" (the evaluator)
-
-    ANALOGY: Like a student with a tutor
-    - Student (policy) tries different study methods
-    - Tutor (value) evaluates how well each method works
-    - Both learn together to find the best study strategy
-
-    GPU ACCELERATION: Neural networks run on GPU for 5-10x faster training!
+    Proximal Policy Optimization (PPO) agent.
+    
+    Uses clipped surrogate objective for stable policy updates and
+    separate value function for advantage estimation.
     """
 
     def __init__(self, state_dim: int, action_dim: int, lr: float = 3e-4, device=None):
@@ -1012,20 +1126,20 @@ class PPOAgent:
         self.action_dim = action_dim
         self.device = device or DEVICE or torch.device("cpu")
 
-        # Policy network (actor) - moved to GPU
-        self.policy_net = MLPNetwork(state_dim, action_dim * 2, device=self.device)  # mean and std for each action
+        # Policy network (actor)
+        self.policy_net = MLPNetwork(state_dim, action_dim * 2, device=self.device)
         self.policy_optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
 
-        # Value network (critic) - moved to GPU
+        # Value network (critic)
         self.value_net = MLPNetwork(state_dim, 1, device=self.device)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr)
 
-        # PPO hyperparameters - tuned for better learning and faster convergence
+        # PPO hyperparameters
         self.clip_ratio = 0.2
         self.value_loss_coeff = 0.5
-        self.entropy_coeff = 0.05  # Higher entropy for better exploration when stuck
-        self.gamma = 0.9   # Lower for faster learning in episodic tasks
-        self.gae_lambda = 0.85  # Lower for less bias, faster adaptation
+        self.entropy_coeff = 0.05
+        self.gamma = 0.9
+        self.gae_lambda = 0.85
 
         # Training data storage
         self.states = []
@@ -1333,7 +1447,9 @@ class SACAgent:
 class ExperimentLogger:
     """Logger for tracking experiment results and generating reports"""
 
-    def __init__(self, experiment_name: str, output_dir: str = "/home/nvidia/rl_experiments/fs_results", optimize_metric: str = "pp_tokens_per_sec"):
+    def __init__(self, experiment_name: str, output_dir: str = None, optimize_metric: str = "pp_tokens_per_sec"):
+        if output_dir is None:
+            output_dir = os.path.expanduser("~/rl_experiments/fs_results")
         self.experiment_name = experiment_name
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1410,7 +1526,6 @@ class ExperimentLogger:
                     params_dict = asdict(serializable_record['params'])
                     serializable_record['params'] = {k: bool(v) for k, v in params_dict.items()}
                 else:
-                    # Already a dict, just ensure bools are standard Python bools
                     serializable_record['params'] = {k: bool(v) for k, v in serializable_record['params'].items()}
             bisect.insort(serializable_episode_data, serializable_record, key=lambda x: -x['result'][optimize_metric])
 
@@ -1441,7 +1556,7 @@ class ExperimentLogger:
 
         # Save CSV for analysis
         if HAS_PANDAS:
-            # Create DataFrame with flattened data for better analysis
+            # Create DataFrame with flattened data
             csv_data = []
             for record in serializable_episode_data:
                 flattened_record = {
@@ -1531,18 +1646,17 @@ class ExperimentLogger:
             self.logger.warning(f"Failed to generate plots: {e}")
 
 
-def run_baseline_evaluation(env: FlashySparkEnvironment, num_runs: int = 5) -> Dict:
+def run_baseline_evaluation(env: SchedulerEnvironment, num_runs: int = 5) -> Dict:
     """Run baseline evaluation with default parameters"""
     print(f"Running baseline evaluation with {num_runs} runs...")
 
     baseline_results = []
-    default_params = SchedulerParams()
+    default_params = SchedulerParams(env.scheduler_config)
 
     for i in range(num_runs):
         print(f"Baseline run {i+1}/{num_runs}")
         result = env._run_benchmark(default_params)
-        # For baseline, use simple scoring without relative performance (no scaling)
-        baseline_reward = result.get_reward("pp_tokens_per_sec", None, None, default_params, 1.0)  # Use pp by default for baseline
+        baseline_reward = result.get_reward("pp_tokens_per_sec", None, None, default_params, 1.0)
         baseline_results.append({
             'reward': baseline_reward,
             'pp_tokens_per_sec': result.pp_tokens_per_sec,
@@ -1619,10 +1733,12 @@ def load_pretrained_model(agent, model_path: str, algorithm: str):
 
 
 def train_rl_agent(
+    scheduler_name: str = "scx_flashyspark",
     algorithm: str = "ppo",
     episodes: int = 100,
     baseline_runs: int = 5,
     model_path: Optional[str] = None,
+    benchmark_cmd: Optional[str] = None,
     experiment_name: Optional[str] = None,
     timeout: int = 300,
     learning_rate: float = 1e-6,
@@ -1634,36 +1750,10 @@ def train_rl_agent(
     pretrained_model_path: Optional[str] = None
 ):
     """
-    MAIN TRAINING FUNCTION - This is where the AI actually learns!
-
-    This function orchestrates the entire learning process. Think of it as the
-    "conductor" of an orchestra, coordinating all the different parts.
-
-    THE LEARNING PROCESS:
-    1. SETUP: Create the AI agent and environment
-    2. BASELINE: Test default settings to see how well the system normally runs
-    3. EPISODES: Run many rounds where the AI tries different settings
-    4. LEARNING: After each round, the AI updates its knowledge
-    5. TRACKING: Save progress and find the best settings discovered
-
-    WHAT HAPPENS IN EACH EPISODE:
-    1. AI chooses scheduler parameter settings (based on what it has learned)
-    2. We apply those settings to the scheduler
-    3. We run a performance test (benchmark)
-    4. We calculate a reward score based on performance
-    5. AI updates its "brain" to get better at choosing good settings
-
-    ANALOGY: Like training an athlete
-    - Episodes = practice sessions
-    - Each practice, try different techniques (parameter combinations)
-    - Coach evaluates performance (reward function)
-    - Athlete adjusts technique based on feedback (neural network learning)
-    - Over time, athlete gets better at choosing winning strategies
-
-    PARAMETERS EXPLAINED:
-    - episodes: How many practice sessions (more = better learning but takes longer)
-    - learning_rate: How fast the AI learns (too fast = unstable, too slow = inefficient)
-    - algorithm: Which learning method to use (PPO or SAC)
+    Train RL agent to optimize scheduler parameters.
+    
+    Runs baseline evaluation, then trains agent for specified episodes
+    using the chosen algorithm (PPO or SAC).
     """
 
     if not HAS_ML_LIBS:
@@ -1673,7 +1763,7 @@ def train_rl_agent(
 
     # Set experiment name
     if experiment_name is None:
-        experiment_name = f"flashyspark_{algorithm}_{episodes}ep"
+        experiment_name = f"{scheduler_name}_{algorithm}_{episodes}ep"
 
     print(f"Starting RL optimization experiment: {experiment_name}")
     print(f"Algorithm: {algorithm}")
@@ -1690,8 +1780,15 @@ def train_rl_agent(
     # Setup GPU optimizations
     setup_gpu_optimizations()
 
-    # STEP 1: Initialize environment (the "world" where AI operates)
-    env = FlashySparkEnvironment(model_path=model_path, timeout=timeout, optimize_metric=optimize_metric, reward_scaling=reward_scaling)
+    # Initialize environment
+    env = SchedulerEnvironment(
+        scheduler_name=scheduler_name,
+        model_path=model_path, 
+        benchmark_cmd=benchmark_cmd,
+        timeout=timeout, 
+        optimize_metric=optimize_metric, 
+        reward_scaling=reward_scaling
+    )
 
     # These numbers define the AI's "input/output dimensions"
     # state_dim = how much information the AI sees about the current situation
@@ -1734,7 +1831,7 @@ def train_rl_agent(
             load_pretrained_model(agent, pretrained_model_path, algorithm.lower())
             logger.logger.info("Pre-trained model loaded successfully!")
 
-        # STEP 4: Training loop - This is where the AI learns!
+        # Training loop
         logger.logger.info("Starting training loop...")
         state, _ = env.reset()  # Start in a clean state
 
@@ -1766,11 +1863,11 @@ def train_rl_agent(
             exploration_noise = base_exploration
             exploration_schedule.append(exploration_noise)
 
-                        # STEP 4a: AI decides what action to take (which parameters to try)
+                        # Select action
             # The AI looks at the current state and uses its neural network to decide
             # what scheduler parameters to test next
 
-            # Add epsilon-greedy exploration for better parameter space coverage
+            # Add epsilon-greedy exploration
             epsilon = min(0.1, exploration_noise)  # 20% chance of random action when exploring
             use_random_action = np.random.random() < epsilon and episode > 5
 
@@ -1803,7 +1900,7 @@ def train_rl_agent(
                     value = 0.0  # SAC doesn't need value for storage
                     log_prob = 0.0  # SAC doesn't need log_prob for storage
 
-            # STEP 4b: Test the chosen parameters and get results
+            # Test parameters
             # This applies the AI's chosen settings to the scheduler, runs a benchmark,
             # and calculates a reward score based on performance
             next_state, reward, terminated, truncated, info = env.step(action)
@@ -1815,9 +1912,7 @@ def train_rl_agent(
 
             avg_recent_reward = np.mean(recent_rewards) if recent_rewards else reward
 
-            # STEP 4c: Store this experience for learning
-            # The AI remembers: "When I was in state X and took action Y, I got reward Z"
-            # This memory will be used later to improve decision-making
+            # Store experience for learning
             if algorithm.lower() == "ppo":
                 agent.store_transition(state, action, reward, value, log_prob, terminated)
             else:  # SAC
@@ -1832,7 +1927,7 @@ def train_rl_agent(
                 training_metrics={'exploration_noise': exploration_noise, 'avg_recent_reward': avg_recent_reward}
             )
 
-            # STEP 4d: Update the AI's "brain" (neural network learning)
+            # Update agent
             # Periodically, the AI analyzes all its recent experiences and updates
             # its decision-making to be better at choosing good parameters
             training_metrics = {}
@@ -1840,9 +1935,6 @@ def train_rl_agent(
                 logger.logger.info("Updating agent...")
                 logger.logger.info(get_gpu_memory_usage())  # Monitor GPU memory
 
-                # This is where the actual "learning" happens!
-                # The AI adjusts its neural network weights based on which actions
-                # led to good vs bad rewards
                 training_metrics = agent.update()
 
                 if training_metrics:
@@ -1869,7 +1961,6 @@ def train_rl_agent(
                 else:
                     episodes_without_improvement += 1
 
-                # Enhanced feedback when stuck with automatic adjustments
                 if episodes_without_improvement >= 20:
                     logger.logger.warning(f"No improvement for {episodes_without_improvement} episodes.")
                     logger.logger.warning("Auto-adjustments enabled: higher exploration, more frequent updates")
@@ -1921,7 +2012,7 @@ def train_rl_agent(
                       f"Recent Avg: {recent_avg:.3f} - Best: {env.best_reward:.3f} - "
                       f"Exploration: {exploration_noise:.3f}")
 
-        # STEP 5: Save results and summary
+        # Save results
         logger.save_results(optimize_metric=logger.optimize_metric)
         logger.generate_plots()
 
@@ -1986,18 +2077,23 @@ def test_best_params(experiment_dir: str, num_test_runs: int = 10):
     print(f"Parameters: {best_params_dict}")
     print("=" * 60)
 
+    # Determine scheduler from experiment directory name or use default
+    scheduler_name = "scx_flashyspark"  # Default
+    if "scx_rusty" in experiment_dir:
+        scheduler_name = "scx_rusty"
+    
     # Create scheduler params object
-    params = SchedulerParams(**best_params_dict)
+    scheduler_config = get_scheduler_config(scheduler_name)
+    params = SchedulerParams(scheduler_config, **best_params_dict)
 
     # Initialize environment for testing
-    env = FlashySparkEnvironment()
+    env = SchedulerEnvironment(scheduler_name=scheduler_name)
 
     # Run test episodes
     test_results = []
     for i in range(num_test_runs):
         print(f"Test run {i+1}/{num_test_runs}")
         result = env._run_benchmark(params)
-        # For testing, use simple scoring without relative performance (no scaling)
         test_reward = result.get_reward("pp", None, None, params, 1.0)
         test_results.append({
             'reward': test_reward,
@@ -2059,10 +2155,17 @@ Examples:
   python rl_experiments/main.py --algorithm sac --episodes 50 --lr 1e-4
 
   # Test best parameters from previous experiment
-  python rl_experiments/main.py --test /home/nvidia/rl_experiments/flashyspark_ppo_100ep_20241201_120000
+  python rl_experiments/main.py --test ~/rl_experiments/flashyspark_ppo_100ep_20241201_120000
         """
     )
 
+    parser.add_argument(
+        "--scheduler", "-S",
+        choices=["scx_flashyspark", "scx_rusty"],
+        default="scx_flashyspark",
+        help="Scheduler to optimize (default: scx_flashyspark)"
+    )
+    
     parser.add_argument(
         "--algorithm", "-a",
         choices=["ppo", "sac"],
@@ -2087,7 +2190,13 @@ Examples:
     parser.add_argument(
         "--model-path", "-m",
         type=str,
-        help="Path to llama model file (default: system default)"
+        help="Path to model file for benchmarking (default: system default)"
+    )
+    
+    parser.add_argument(
+        "--benchmark-cmd", "-b",
+        type=str,
+        help="Path to benchmark executable (default: system default)"
     )
 
     parser.add_argument(
@@ -2185,10 +2294,12 @@ Examples:
         else:
             # Training mode
             success = train_rl_agent(
+                scheduler_name=args.scheduler,
                 algorithm=args.algorithm,
                 episodes=args.episodes,
                 baseline_runs=args.baseline_runs,
                 model_path=args.model_path,
+                benchmark_cmd=args.benchmark_cmd,
                 experiment_name=args.experiment_name,
                 timeout=args.timeout,
                 learning_rate=args.learning_rate,

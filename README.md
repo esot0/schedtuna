@@ -1,253 +1,463 @@
-# scx_flashyspark RL Parameter Optimizer
+# Generalized Scheduler Parameter Optimizer
 
-This directory contains a reinforcement learning system for optimizing scx_flashyspark scheduler parameters to improve llama-bench performance.
+A comprehensive reinforcement learning framework for optimizing Linux scheduler parameters across multiple scheduler types and parameter configurations.
 
 ## Overview
 
-The system uses reinforcement learning (PPO or SAC algorithms) to automatically find optimal boolean parameter combinations for the scx_flashyspark scheduler. It evaluates performance using real llama-bench runs and can optimize for either prompt processing (pp) or text generation (tg) metrics.
+This system uses reinforcement learning algorithms (PPO, SAC) to automatically discover optimal parameter configurations for various Linux schedulers.
 
-## Key Features
 
-- **Comprehensive Parameter Space**: Optimizes all 20 boolean parameters available in scx_flashyspark
-- **Real Performance Evaluation**: Uses actual llama-bench runs for performance measurement
-- **Flexible Optimization**: Choose between optimizing prompt processing or text generation performance
-- **Multiple RL Algorithms**: Supports both PPO and SAC algorithms
-- **Experiment Tracking**: Comprehensive logging, visualization, and result storage
-- **Safety Mechanisms**: Automatic cleanup of scheduler processes and timeout handling
+## Supported Schedulers
 
-## Parameter Space
+### scx_flashyspark
+Full-featured scheduler with comprehensive parameter support:
 
-The system optimizes 20 boolean parameters:
-
-### Core Scheduling Behavior
+#### Boolean Parameters
 - `slice_lag_scaling`: Dynamic slice lag scaling based on CPU utilization
-- `tickless`: Tickless mode - infinite time slices with preemption only on contention
 - `rr_sched`: Round-robin scheduling with fixed time slices
 - `no_builtin_idle`: Disable in-kernel idle CPU selection policy
 - `local_pcpu`: Enable prioritization of per-CPU tasks
 - `direct_dispatch`: Always allow direct dispatch to idle CPUs
 - `sticky_cpu`: Enable CPU stickiness to reduce task migrations
-- `native_priority`: Use native Linux priority range instead of normalization
+- `stay_with_kthread`: Keep tasks on CPUs where kthreads are running
+- `native_priority`: Use native Linux priority range
 - `local_kthreads`: Enable per-CPU kthread prioritization
 - `no_wake_sync`: Disable direct dispatch during synchronous wakeups
+- `aggressive_gpu_tasks`: GPU task mode for performance cores
+- `timer_kick`: Use BPF timer for task kicking
 
-### Advanced Features
-- `stay_with_kthread`: Keep tasks on CPUs where kthreads are running (experimental)
-- `aggressive_gpu_tasks`: GPU task mode - only GPU tasks can use big/performance cores
-- `workload_aware_scheduling`: Make CPU selection decisions based on workload type
-- `timer_kick`: Use BPF timer instead of scx_kick_cpu for task kicking
-- `more_dsqs`: Use multiple dispatch queues to prioritize tasks on specific cores
+#### Numeric Parameters
+- `slice_us`: Base time slice duration (1000-100000 μs)
+- `cpu_util_threshold`: CPU utilization threshold (0.1-1.0)
 
-### System Optimizations
-- `disable_l2`: Disable L2 cache awareness optimizations
-- `disable_l3`: Disable L3 cache awareness optimizations
-- `disable_smt`: Disable SMT (simultaneous multithreading) awareness
-- `disable_numa`: Disable NUMA rebalancing optimizations
-- `cpufreq`: Enable CPU frequency control (requires schedutil governor)
+#### Categorical Parameters
+- `scheduling_policy`: Overall policy mode (default, performance, powersave, latency)
+
+### scx_rusty
+Basic scheduler support with essential parameters:
+- `direct`: Enable direct dispatch
+- `kick`: Enable kicking mechanism
+- `slice_us`: Time slice duration (1000-50000 μs)
 
 ## Quick Start
 
-1. **Install Dependencies:**
+### Installation
+
+1. **Setup Environment:**
 ```bash
-pip install -r requirements.txt
+./setup.sh
 ```
 
-2. **Basic Training:**
+2. **Activate Virtual Environment:**
 ```bash
-# Train PPO agent optimizing prompt processing performance
-python rl_experiments/main.py --algorithm ppo --episodes 50 --optimize-metric pp
-
-# Train SAC agent optimizing text generation performance
-python rl_experiments/main.py --algorithm sac --episodes 50 --optimize-metric tg
+source rl_scx_params/bin/activate
 ```
 
-3. **Test Specific Parameters:**
-```bash
-# Test aggressive GPU mode with timer kick
-python rl_experiments/test_params.py --aggressive-gpu-tasks --timer-kick
+### Using the Python API (Recommended)
 
-# Test workload-aware scheduling with cache optimizations disabled
-python rl_experiments/test_params.py --workload-aware-scheduling --disable-l2 --disable-l3
+The easiest way to use rl_scx_params is through the Python API:
+
+```python
+from rl_scx_params import optimize_scheduler
+
+# Quick optimization with default settings
+results = optimize_scheduler(
+    scheduler_name="scx_flashyspark",
+    episodes=50,
+    algorithm="ppo"
+)
 ```
 
-## Usage Examples
+See the [API Usage](#api-usage) section for more details.
 
-### Training Examples
+### Using the Command Line
 
+You can also use the traditional command-line interface:
+
+1. **Optimize scx_flashyspark:**
 ```bash
-# Standard PPO training optimizing prompt processing
-python rl_experiments/main.py --algorithm ppo --episodes 100 --optimize-metric pp
+# Quick test run
+python main.py --scheduler scx_flashyspark --episodes 10 --baseline-runs 2
 
-# SAC training with custom parameters
-python rl_experiments/main.py --algorithm sac --episodes 75 --lr 1e-4 --optimize-metric tg
-
-# Training with baseline evaluation
-python rl_experiments/main.py --algorithm ppo --episodes 50 --baseline-runs 5
-
-# Custom experiment name and model path
-python rl_experiments/main.py --algorithm ppo --episodes 50 \
-    --experiment-name "gpu_optimization" \
-    --model-path "/path/to/custom/model.gguf"
+# Full optimization
+python main.py --scheduler scx_flashyspark --algorithm ppo --episodes 100
 ```
 
-### Testing Examples
-
+2. **Optimize scx_rusty:**
 ```bash
-# Test GPU-focused configuration
-python rl_experiments/test_params.py --aggressive-gpu-tasks --sticky-cpu --stay-with-kthread
-
-# Test high-performance configuration
-python rl_experiments/test_params.py --direct-dispatch --timer-kick --more-dsqs --cpufreq
-
-# Test cache-disabled configuration
-python rl_experiments/test_params.py --disable-l2 --disable-l3 --disable-smt
-
-# Test with increased runs for statistical significance
-python rl_experiments/test_params.py --workload-aware-scheduling --runs 10
+python main.py --scheduler scx_rusty --algorithm sac --episodes 50
 ```
 
-## Command Line Arguments
+3. **Custom Configuration:**
+```bash
+python main.py --scheduler scx_flashyspark \
+    --algorithm ppo \
+    --episodes 200 \
+    --optimize-metric tg_tokens_per_sec \
+    --learning-rate 1e-4 \
+    --experiment-name "gpu_workload_optimization"
+```
+
+## Advanced Features
+
+### Experience Replay and Pre-training
+
+Leverage historical experiment data to accelerate learning:
+
+```bash
+# Analyze historical patterns
+python experience_replay.py --statistics --param-combinations 15
+
+# Pre-train an agent
+python experience_replay.py --pretrain-agent --algorithm ppo --pretrain-epochs 20
+
+# Use pre-trained model
+python main.py --scheduler scx_flashyspark \
+    --pretrained-model pretrained_ppo_model.pt \
+    --episodes 100
+```
+
+### Parameter Analysis
+
+Understand which parameters work best:
+
+```bash
+# Analyze parameter effectiveness
+python pretrain.py --scheduler scx_flashyspark --action analyze
+
+# Recompute rewards with new function
+python pretrain.py --scheduler scx_flashyspark --action recompute
+```
+
+### Custom Benchmarks
+
+Use different benchmark tools:
+
+```bash
+python main.py --scheduler scx_flashyspark \
+    --benchmark-cmd "/path/to/custom/benchmark" \
+    --model-path "/path/to/model.gguf"
+```
+
+## API Usage
+
+The rl_scx_params package provides a clean Python API for programmatic usage:
+
+### Basic Usage
+
+```python
+from rl_scx_params import optimize_scheduler
+
+# Quick optimization with minimal configuration
+results = optimize_scheduler(
+    scheduler_name="scx_flashyspark",
+    episodes=50,
+    algorithm="ppo"
+)
+```
+
+### Using the RLSchedulerOptimizer Class
+
+```python
+from rl_scx_params import RLSchedulerOptimizer
+
+# Create optimizer with dictionary configuration
+optimizer = RLSchedulerOptimizer({
+    "scheduler_name": "scx_flashyspark",
+    "algorithm": "ppo",
+    "episodes": 100,
+    "learning_rate": 0.001,
+    "optimize_metric": "throughput"
+})
+
+# Get scheduler information
+info = optimizer.get_scheduler_info()
+print(f"Optimizing {info['scheduler_name']} with {len(info['parameters'])} parameters")
+
+# Train the agent
+results = optimizer.train()
+
+# Test the best parameters
+test_results = optimizer.test(results['experiment_path'], test_runs=10)
+```
+
+### Using Configuration Files
+
+Create a YAML configuration file (`config.yaml`):
+
+```yaml
+scheduler_name: scx_flashyspark
+algorithm: ppo
+episodes: 100
+learning_rate: 0.001
+optimize_metric: throughput
+experiment_name: my_experiment
+```
+
+Then use it in your code:
+
+```python
+from rl_scx_params import RLSchedulerOptimizer
+
+# Load from config file
+optimizer = RLSchedulerOptimizer("config.yaml")
+results = optimizer.train()
+```
+
+You can also use JSON configuration files:
+
+```json
+{
+  "scheduler_name": "scx_flashyspark",
+  "algorithm": "sac",
+  "episodes": 200,
+  "learning_rate": 0.0001,
+  "optimize_metric": "latency"
+}
+```
+
+### Defining Custom Scheduler Parameters
+
+If you're working with a custom scheduler, you can define your own parameters:
+
+```python
+optimizer = RLSchedulerOptimizer()
+
+# Define custom parameters
+optimizer.define_scheduler_params({
+    'enable_turbo': {
+        'type': 'boolean',
+        'default': False,
+        'description': 'Enable turbo boost mode',
+        'command_arg': '--turbo'
+    },
+    'slice_duration': {
+        'type': 'integer',
+        'default': 10000,
+        'min_value': 1000,
+        'max_value': 50000,
+        'description': 'Time slice duration in microseconds',
+        'command_arg': '--slice-duration'
+    },
+    'load_threshold': {
+        'type': 'float',
+        'default': 0.75,
+        'min_value': 0.0,
+        'max_value': 1.0,
+        'description': 'CPU load threshold',
+        'command_arg': '--load-threshold'
+    },
+    'scheduling_mode': {
+        'type': 'categorical',
+        'default': 'balanced',
+        'choices': ['performance', 'balanced', 'powersave'],
+        'description': 'Overall scheduling mode',
+        'command_arg': '--mode'
+    }
+})
+
+# Train with custom parameters
+results = optimizer.train()
+```
+
+### Example Scripts
+
+Check the `examples/` directory for complete working examples:
+
+- `basic_usage.py` - Simple optimization example
+- `advanced_usage.py` - Full API demonstration
+- `config_file_usage.py` - Using configuration files
+- `custom_scheduler_params.py` - Custom scheduler parameters
+
+### Configuration Options
+
+All configuration options available in OptimizerConfig:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `scheduler_name` | str | "scx_flashyspark" | Scheduler to optimize |
+| `algorithm` | str | "ppo" | RL algorithm ("ppo" or "sac") |
+| `episodes` | int | 50 | Number of training episodes |
+| `baseline_runs` | int | 3 | Number of baseline evaluation runs |
+| `learning_rate` | float | 1e-3 | Learning rate for RL agent |
+| `update_frequency` | int | 5 | Agent update frequency (episodes) |
+| `save_frequency` | int | 25 | Checkpoint save frequency |
+| `benchmark_cmd` | str | None | Custom benchmark command |
+| `model_path` | str | None | Path to model file |
+| `timeout` | int | 300 | Benchmark timeout (seconds) |
+| `optimize_metric` | str | "throughput" | Metric to optimize |
+| `reward_scaling` | float | 1.0 | Reward scaling factor |
+| `experiment_name` | str | None | Custom experiment name |
+| `use_gpu` | bool | True | Use GPU if available |
+| `pretrained_model_path` | str | None | Path to pretrained model |
+
+## Command Line Reference
 
 ### Main Training Script (`main.py`)
 
-- `--algorithm {ppo,sac}`: RL algorithm to use (default: ppo)
-- `--episodes N`: Number of training episodes (default: 50)
-- `--optimize-metric {pp,tg}`: Optimize prompt processing or text generation (default: pp)
-- `--baseline-runs N`: Number of baseline evaluation runs (default: 3)
-- `--model-path PATH`: Path to llama model file
+**Core Options:**
+- `--scheduler {scx_flashyspark,scx_rusty}`: Scheduler to optimize
+- `--algorithm {ppo,sac}`: RL algorithm to use
+- `--episodes N`: Number of training episodes
+- `--optimize-metric {pp_tokens_per_sec,tg_tokens_per_sec}`: Optimization target
+
+**Training Configuration:**
+- `--learning-rate FLOAT`: Learning rate for RL agent
+- `--update-frequency N`: Agent update frequency
+- `--save-frequency N`: Checkpoint save frequency
+- `--baseline-runs N`: Number of baseline evaluation runs
+
+**System Configuration:**
+- `--model-path PATH`: Path to model file for benchmarking
+- `--benchmark-cmd PATH`: Path to benchmark executable
+- `--timeout N`: Benchmark timeout in seconds
+- `--no-gpu`: Force CPU usage
+
+**Experiment Management:**
 - `--experiment-name NAME`: Custom experiment name
-- `--timeout N`: Benchmark timeout in seconds (default: 300)
-- `--learning-rate FLOAT`: Learning rate for RL agent (default: 3e-4)
-- `--update-frequency N`: Agent update frequency in episodes (default: 10)
-- `--save-frequency N`: Checkpoint save frequency in episodes (default: 25)
+- `--pretrained-model PATH`: Pre-trained model to load
+- `--reward-scaling FLOAT`: Reward scaling factor
 
-### Parameter Testing Script (`test_params.py`)
+### Experience Replay Script (`experience_replay.py`)
 
-All 20 boolean parameters are available as command-line flags:
+**Data Management:**
+- `--results-dir PATH`: Directory containing experiment results
+- `--experiment-patterns PATTERN [PATTERN ...]`: Experiment name patterns to include
+- `--max-episodes-per-exp N`: Maximum episodes per experiment
 
-#### Core Scheduling
-- `--slice-lag-scaling`: Dynamic slice lag scaling
-- `--tickless`: Tickless mode
-- `--rr-sched`: Round-robin scheduling
-- `--no-builtin-idle`: Disable built-in idle selection
-- `--local-pcpu`: Enable tasks prioritization
-- `--direct-dispatch`: Allow direct dispatch to idle CPUs
-- `--sticky-cpu`: Enable CPU stickiness
-- `--native-priority`: Use native task priorities
-- `--local-kthreads`: Per-CPU kthread prioritization
-- `--no-wake-sync`: Disable direct dispatch during sync wakeups
+**Analysis Options:**
+- `--statistics`: Show detailed statistics
+- `--param-combinations N`: Number of top parameter combinations to analyze
+- `--recalculate`: Recalculate rewards with new function
 
-#### Advanced Features
-- `--stay-with-kthread`: Keep tasks on CPUs where kthreads are running
-- `--aggressive-gpu-tasks`: Aggressive GPU task mode
-- `--workload-aware-scheduling`: Workload-aware scheduling mode
-- `--timer-kick`: Use BPF timer for task kicking
-- `--more-dsqs`: Use multiple dispatch queues
+**Pre-training:**
+- `--pretrain-agent`: Pre-train a new agent
+- `--algorithm {ppo,sac}`: Algorithm for pre-training
+- `--pretrain-epochs N`: Number of pre-training epochs
 
-#### System Optimizations
-- `--disable-l2`: Disable L2 cache awareness
-- `--disable-l3`: Disable L3 cache awareness
-- `--disable-smt`: Disable SMT awareness
-- `--disable-numa`: Disable NUMA rebalancing
-- `--cpufreq`: Enable CPU frequency control
+### Analysis Script (`pretrain.py`)
 
-#### Testing Options
-- `--runs N`: Number of test runs (default: 3)
-- `--use-environment`: Use RL environment for testing
+**Actions:**
+- `--action {analyze,pretrain,recompute}`: Action to perform
+- `--scheduler SCHEDULER`: Scheduler to analyze
 
 ## Output and Results
 
-### Training Results
-- **Experiment logs**: Detailed logs in `rl_experiments/[experiment_name]/experiment.log`
-- **Episode data**: JSON and CSV files with per-episode results
-- **Best parameters**: `best_parameters.json` contains optimal configuration found
-- **Checkpoints**: PyTorch model checkpoints saved periodically
-- **Visualizations**: Performance plots and training curves
+### Experiment Structure
+```
+results/
+├── scx_flashyspark_ppo_100ep_20241201_120000/
+│   ├── experiment.log              # Detailed training logs
+│   ├── best_parameters.json        # Optimal parameters found
+│   ├── episode_results.json        # Complete episode data
+│   ├── episode_results.csv         # Episode data in CSV format
+│   ├── baseline_results.json       # Baseline performance
+│   ├── performance_plots.png       # Training visualizations
+│   └── checkpoint_episode_50.pt    # Model checkpoints
+└── scx_rusty_sac_50ep_20241201_130000/
+    └── ...
+```
 
 ### Key Metrics
-- **PP tokens/second**: Prompt processing throughput from llama-bench
-- **TG tokens/second**: Text generation throughput from llama-bench
-- **Reward**: Combined metric based on selected optimization target
-- **Success rate**: Percentage of successful benchmark runs
-- **Execution time**: Time taken for each benchmark run
 
-### Example Output Format
-```
-| model | size | params | backend | ngl | test | t/s |
-| llama 70B IQ4_NL | ... | ... | CUDA | 99 | pp512 | 257.21 ± 10.67 |
-| llama 70B IQ4_NL | ... | ... | CUDA | 99 | tg128 | 5.09 ± 0.32 |
+**Performance Metrics:**
+- **PP tokens/second**: Prompt processing throughput
+- **TG tokens/second**: Text generation throughput
+- **Execution time**: Benchmark completion time
+- **Success rate**: Percentage of successful runs
+
+**Training Metrics:**
+- **Reward**: Combined optimization metric
+- **Policy loss**: RL algorithm policy loss
+- **Value loss**: Value function loss
+- **Exploration**: Current exploration rate
+
+## Adding New Schedulers
+
+The framework is designed for easy extension. To add a new scheduler:
+
+1. **Define Scheduler Configuration:**
+```python
+def get_scx_newscheduler_config() -> SchedulerConfig:
+    parameters = {
+        'enable_feature': ParameterSpec(
+            'enable_feature', ParameterType.BOOLEAN, False,
+            description="Enable special feature",
+            command_arg="--enable-feature"
+        ),
+        'time_slice': ParameterSpec(
+            'time_slice', ParameterType.INTEGER, 10000,
+            min_value=1000, max_value=50000,
+            description="Time slice in microseconds",
+            command_arg="--time-slice"
+        ),
+        'policy_mode': ParameterSpec(
+            'policy_mode', ParameterType.CATEGORICAL, 'balanced',
+            choices=['balanced', 'performance', 'efficiency'],
+            description="Scheduling policy mode",
+            command_arg="--policy"
+        )
+    }
+    
+    return SchedulerConfig(
+        name="scx_newscheduler",
+        binary_path="/path/to/scx_newscheduler",
+        parameters=parameters,
+        description="New scheduler with custom parameters"
+    )
 ```
 
-## File Structure
-
+2. **Register Configuration:**
+```python
+# In get_scheduler_config() function
+configs = {
+    'scx_flashyspark': get_scx_flashyspark_config,
+    'scx_rusty': get_scx_rusty_config,
+    'scx_newscheduler': get_scx_newscheduler_config,  # Add this line
+}
 ```
-rl_experiments/
-├── main.py              # Main RL training script
-├── test_params.py       # Manual parameter testing utility
-├── requirements.txt     # Python dependencies
-├── README.md           # This documentation
-└── [experiment_name]/  # Generated experiment results
-    ├── experiment.log   # Detailed training logs
-    ├── best_parameters.json # Optimal parameters found
-    ├── episode_results.json # Complete episode data
-    ├── episode_results.csv  # Episode data in CSV format
-    ├── baseline_results.json # Baseline performance
-    ├── performance_plots.png # Training visualizations
-    └── checkpoint_*.pt  # Model checkpoints
+
+3. **Update Command Line Options:**
+```python
+parser.add_argument(
+    "--scheduler", "-S",
+    choices=["scx_flashyspark", "scx_rusty", "scx_newscheduler"],  # Add new scheduler
+    default="scx_flashyspark",
+    help="Scheduler to optimize"
+)
 ```
 
 ## System Requirements
 
-- **OS**: Linux (scheduler requires kernel support)
-- **Python**: 3.8+ with ML libraries (PyTorch, Gymnasium, etc.)
-- **Hardware**: CUDA-capable GPU recommended for llama-bench
-- **Permissions**: sudo access required for scheduler operations
-- **Storage**: ~1GB for experiment results and model checkpoints
+**Operating System:**
+- Linux with sched_ext support
+- Kernel 6.12+ recommended
 
-## Integration with scx_flashyspark
 
-The system directly integrates with the scx_flashyspark scheduler by:
 
-1. **Dynamic Parameter Application**: Translates RL actions to scheduler command-line arguments
-2. **Real-time Evaluation**: Runs actual scheduler instances with llama-bench workloads
-3. **Performance Parsing**: Extracts metrics from llama-bench table output
-4. **Safe Operation**: Automatic cleanup of scheduler processes and timeout handling
 
-## Advanced Usage
-
-### Custom Reward Functions
-The reward function can be modified by editing the `BenchmarkResult.get_reward()` method to incorporate additional metrics or different optimization objectives.
-
-### Extended Training
-For production optimization, consider running longer training sessions:
-```bash
-python rl_experiments/main.py --algorithm ppo --episodes 500 --save-frequency 50
-```
-
-### Hyperparameter Tuning
-Experiment with different learning rates and update frequencies:
-```bash
-python rl_experiments/main.py --algorithm sac --lr 1e-3 --update-frequency 5
-```
-
-## Troubleshooting
-
-### Common Issues
-- **Scheduler startup failures**: Check sudo permissions and scheduler binary path
-- **llama-bench timeouts**: Increase `--timeout` value or check model path
-- **Memory issues**: Reduce batch sizes or use smaller models
-- **Permission errors**: Ensure proper sudo access for scheduler operations
-
-### Debug Mode
-Enable verbose logging for troubleshooting:
-```bash
-python rl_experiments/main.py --verbose --algorithm ppo --episodes 10
-```
+**Storage:**
+- 2GB+ free space for experiments and models
+- Additional space for benchmark models
 
 ## Performance Tips
 
 1. **Start Small**: Begin with 25-50 episodes to verify system operation
 2. **Use Baselines**: Always run baseline evaluation for comparison
-3. **Monitor Resources**: Watch CPU, memory, and GPU utilization during training
-4. **Checkpoint Frequently**: Use appropriate `--save-frequency` for long runs
-5. **Choose Metrics Wisely**: Optimize the metric most relevant to your workload (pp vs tg)
+3. **Monitor Resources**: Watch CPU, memory, and GPU utilization
+4. **Leverage History**: Use experience replay for faster convergence
+5. **Choose Metrics Wisely**: Optimize for your specific workload requirements
+6. **Checkpoint Frequently**: Use appropriate save frequency for long runs
+
+
+
+### Debug Mode
+
+Enable verbose logging:
+```bash
+python main.py --verbose --scheduler scx_flashyspark --episodes 10
+```
+
+
+
+

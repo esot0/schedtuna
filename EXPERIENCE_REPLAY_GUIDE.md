@@ -17,7 +17,7 @@ You've run many experiments and accumulated valuable data in `fs_results/`. Inst
 
 ```bash
 # Load historical data and recalculate rewards with new reward function
-cd /home/nvidia/rl_experiments
+cd ~/rl_experiments
 python experience_replay.py --optimize-metric pp_tokens_per_sec --reward-scaling 1.5
 ```
 
@@ -128,44 +128,6 @@ This tells you:
 - How the new reward function compares to the old one
 - Which parameter combinations perform best with your new reward function
 
-### Pre-training Output
-
-During pre-training, you'll see:
-
-```
-Starting pre-training with historical data...
-Epoch 0/20 - Policy Loss: 2.3456, Value Loss: 1.2345
-Epoch 5/20 - Policy Loss: 1.8756, Value Loss: 0.9234
-...
-Pre-training completed!
-Pre-trained model saved to: pretrained_ppo_model.pt
-Pre-training used 3426 historical experiences
-```
-
-The decreasing loss values indicate the agent is learning from historical data.
-
-## How It Works
-
-### 1. Data Loading
-- Reads `episode_results.json` files from your experiment directories
-- Extracts parameter combinations, performance metrics, and original rewards
-- Converts parameters to the state/action format used by your RL agent
-
-### 2. Reward Re-calculation
-- Uses your current `get_reward()` function from `BenchmarkResult`
-- Applies new baselines, scaling factors, and optimization metrics
-- Preserves original performance metrics while updating reward values
-
-### 3. Pre-training
-- Creates training batches from historical experiences
-- Trains the agent's policy and value networks using supervised learning
-- Uses a reduced learning rate to avoid overfitting to historical data
-
-### 4. Analysis
-- Groups experiences by performance quartiles
-- Identifies which parameters appear most frequently in high-performing configurations
-- Provides statistical comparisons between different performance levels
-
 ## Tips for Best Results
 
 ### 1. Choose Good Historical Data
@@ -244,12 +206,3 @@ python experience_replay.py \
     --reward-scaling 1.5 \
     --pretrain-agent
 ```
-
-## Next Steps
-
-1. **Experiment with reward functions** - Use the analysis to understand what works
-2. **Pre-train agents** - Get a head start on training with your historical knowledge
-3. **Iterate quickly** - Use pre-trained models to test new ideas faster
-4. **Build experience databases** - Save processed experiences for future use
-
-This system transforms your historical experiment data from static logs into active training resources, potentially reducing the time needed to find optimal configurations by 50-80%.

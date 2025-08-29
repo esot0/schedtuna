@@ -3,13 +3,13 @@
 # Setup script for RL-based scx_flashyspark Scheduler Optimization
 # This script helps install dependencies and verify the environment
 
-set -e  # Exit on any error
+set -e  
 
 echo "======================================================"
-echo "RL-based scx_flashyspark Scheduler Optimization Setup"
+echo " Scheduler Parameter Optimization Setup"
 echo "======================================================"
 
-# Colors for output
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -30,7 +30,7 @@ print_error() {
 
 
 
-# Check if the virtual environment directory exists
+
 if [ ! -d "$VENV_NAME" ]; then
     echo "Creating virtual environment '$VENV_NAME'..."
     python3 -m venv "$VENV_NAME"
@@ -38,50 +38,88 @@ else
     echo "Virtual environment '$VENV_NAME' already exists."
 fi
 
-# Activate the virtual environment
+
 source "$VENV_NAME"/bin/activate
 
 echo "Virtual environment '$VENV_NAME' activated."
 
 
-# Check for pip
+
 if ! command -v pip3 &> /dev/null; then
     print_error "pip3 not found. Please install pip first."
     exit 1
 fi
 
-# Install Python dependencies
+
 print_status "Installing Python dependencies..."
-if [ -f "rl_experiments/requirements.txt" ]; then
-    pip3 install -r rl_experiments/requirements.txt
+if [ -f "requirements.txt" ]; then
+    pip3 install -r requirements.txt
     print_status "Python dependencies installed successfully"
 else
     print_warning "requirements.txt not found, installing manually..."
-    pip3 install torch gymnasium numpy pandas matplotlib seaborn
+    pip3 install torch gymnasium numpy pandas matplotlib seaborn scipy scikit-learn
 fi
 
-# Check critical binaries
+
 print_status "Checking required binaries..."
 
-# Check scx_flashyspark
+
+print_status "Checking for available schedulers..."
+scheduler_found=false
+
+
 if [ -x "/home/nvidia/bin/scx_flashyspark" ]; then
     print_status "scx_flashyspark found at /home/nvidia/bin/scx_flashyspark"
-else
-    print_error "scx_flashyspark not found at /home/nvidia/bin/scx_flashyspark"
-    print_error "Please compile and install scx_flashyspark first"
+    scheduler_found=true
+fi
+
+
+if [ -x "/home/nvidia/bin/scx_rusty" ]; then
+    print_status "scx_rusty found at /home/nvidia/bin/scx_rusty"
+    scheduler_found=true
+fi
+
+
+for scheduler in scx_lavd scx_bpfland scx_nest; do
+    if [ -x "/home/nvidia/bin/$scheduler" ]; then
+        print_status "$scheduler found at /home/nvidia/bin/$scheduler"
+        scheduler_found=true
+    fi
+done
+
+if [ "$scheduler_found" = false ]; then
+    print_error "No supported schedulers found in /home/nvidia/bin/"
+    print_error "Please compile and install at least one scheduler first"
+    print_warning "Supported schedulers: scx_flashyspark, scx_rusty, scx_lavd, scx_bpfland, scx_nest"
     exit 1
 fi
 
-# Check llama-bench
+
+print_status "Checking for benchmark tools..."
+benchmark_found=false
+
+
 if [ -x "/home/nvidia/llama.cpp/build/bin/llama-bench" ]; then
     print_status "llama-bench found at /home/nvidia/llama.cpp/build/bin/llama-bench"
-else
-    print_error "llama-bench not found at /home/nvidia/llama.cpp/build/bin/llama-bench"
-    print_error "Please compile llama.cpp with benchmark support first"
-    exit 1
+    benchmark_found=true
 fi
 
-# Check for models
+
+for bench_path in "/usr/local/bin/llama-bench" "/opt/llama.cpp/bin/llama-bench" "./llama-bench"; do
+    if [ -x "$bench_path" ]; then
+        print_status "llama-bench found at $bench_path"
+        benchmark_found=true
+        break
+    fi
+done
+
+if [ "$benchmark_found" = false ]; then
+    print_warning "llama-bench not found in standard locations"
+    print_warning "You can specify a custom benchmark command when running the optimizer"
+    print_warning "Example: python main.py --benchmark-cmd /path/to/your/benchmark"
+fi
+
+
 print_status "Checking for models..."
 models_dir="/home/nvidia/llama.cpp/models"
 if [ -d "$models_dir" ]; then
@@ -102,7 +140,7 @@ else
     print_warning "Models directory $models_dir not found"
 fi
 
-# Check sudo access
+
 print_status "Checking sudo access..."
 if sudo -n true 2>/dev/null; then
     print_status "Sudo access available (no password required)"
@@ -113,7 +151,7 @@ else
     exit 1
 fi
 
-# Check for existing scheduler processes
+
 print_status "Checking for running scheduler processes..."
 if pgrep -f "scx_" > /dev/null; then
     print_warning "Found running sched_ext processes:"
@@ -124,8 +162,8 @@ else
     print_status "No conflicting scheduler processes found"
 fi
 
-# Create output directory
-output_dir="/home/nvidia/rl_experiments"
+
+output_dir="./results"
 print_status "Creating output directory..."
 mkdir -p "$output_dir"
 if [ -w "$output_dir" ]; then
@@ -135,7 +173,7 @@ else
     exit 1
 fi
 
-# Test Python imports
+
 print_status "Testing Python imports..."
 python3 -c "
 import sys
@@ -155,7 +193,7 @@ except ImportError as e:
     exit 1
 }
 
-# Final verification
+
 print_status "Running final verification..."
 if python3 -c "
 import sys
@@ -176,12 +214,15 @@ echo "======================================================"
 echo ""
 echo "Quick start:"
 echo "  # Test installation with a short run"
-echo "  python rl_experiments/main.py --episodes 5 --baseline-runs 1"
+echo "  python main.py --scheduler scx_flashyspark --episodes 5 --baseline-runs 1"
 echo ""
-echo "  # Start full optimization"
-echo "  python rl_experiments/main.py --algorithm ppo --episodes 100"
+echo "  # Start full optimization for scx_flashyspark"
+echo "  python main.py --scheduler scx_flashyspark --algorithm ppo --episodes 100"
+echo ""
+echo "  # Optimize a different scheduler"
+echo "  python main.py --scheduler scx_rusty --algorithm sac --episodes 50"
 echo ""
 echo "  # Get help"
-echo "  python rl_experiments/main.py --help"
+echo "  python main.py --help"
 echo ""
 echo "Check the README.md for detailed usage instructions."

@@ -1,0 +1,31 @@
+# Configuration for optimizing scx_flashyspark scheduler
+# This file demonstrates all available configuration options
+
+# Scheduler Configuration
+scheduler_name: scx_flashyspark
+
+# Custom scheduler parameters (optional - will use defaults if not specified)
+scheduler_params:
+  # You can override default values for specific parameters
+  slice_us: 20000
+  cpu_util_threshold: 0.85
+  
+# Training Configuration
+algorithm: ppo  # Options: ppo, sac
+episodes: 100
+baseline_runs: 5
+learning_rate: 0.001
+update_frequency: 5  # Update agent every N episodes
+save_frequency: 25   # Save checkpoints every N episodes
+
+# Benchmark Configuration
+benchmark_cmd: null  # Will use default benchmark if not specified
+model_path: null     # Will use default model if not specified
+timeout: 300         # Benchmark timeout in seconds
+optimize_metric: throughput  # Options: throughput, latency, combined
+reward_scaling: 1.0
+
+# Experiment Configuration
+experiment_name: flashyspark_optimization
+use_gpu: true
+pretrained_model_path: null  # Path to pretrained model (optional)

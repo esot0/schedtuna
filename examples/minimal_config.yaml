@@ -1,0 +1,6 @@
+# Minimal configuration example
+# Only specify what you want to change from defaults
+
+scheduler_name: scx_flashyspark
+algorithm: ppo
+episodes: 50

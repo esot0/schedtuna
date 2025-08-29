@@ -1,15 +1,18 @@
-#!/home/nvidia/rl_experiments/venv/bin/python3
+#!/usr/bin/env python3
 """
 Experience Replay from Historical Data
 =====================================
 
-This script enables you to leverage data from previous experiments by:
-1. Loading historical episode results from previous experiments
-2. Re-calculating rewards using a new/updated reward function
-3. Using this data to pre-train or warm-start your RL agent
+A generalized system for leveraging historical experiment data to accelerate
+reinforcement learning training. Supports multiple scheduler types and mixed
+parameter configurations.
 
-This can significantly accelerate learning by giving the agent a head start
-based on all the parameter combinations you've already tested.
+Features:
+- Load and process historical experiment results
+- Recalculate rewards with updated reward functions
+- Pre-train RL agents using supervised learning
+- Analyze parameter effectiveness patterns
+- Support for multiple scheduler configurations
 """
 
 import os
@@ -25,15 +28,14 @@ from main import ParamWrapper
 
 # Import necessary classes from main.py
 import sys
-sys.path.append('/home/nvidia/rl_experiments')
 from main import (
-    BenchmarkResult, SchedulerParams, FlashySparkEnvironment,
-    PPOAgent, SACAgent, DEVICE
+    BenchmarkResult, SchedulerParams, SchedulerEnvironment,
+    PPOAgent, SACAgent, DEVICE, get_scheduler_config, ParameterType
 )
 
 @dataclass
 class HistoricalExperience:
-    """A single historical experience that can be used for training"""
+    """A single historical experience that can be used for training."""
     state: np.ndarray
     action: np.ndarray
     reward: float
@@ -43,14 +45,16 @@ class HistoricalExperience:
     original_filename: str
     performance_metrics: Dict[str, float]
     success: bool
+    scheduler_name: str = "scx_flashyspark"  # Track which scheduler was used
 
 class ExperienceReplayManager:
-    """Manages loading and processing historical experiment data"""
+    """Manages loading and processing historical experiment data."""
 
-    def __init__(self, results_dir: str = "/home/nvidia/rl_experiments/fs_results"):
+    def __init__(self, results_dir: str = "results"):
         self.results_dir = Path(results_dir)
         self.historical_experiences: List[HistoricalExperience] = []
-        self.env = None
+        self.scheduler_configs = {}  # Cache for scheduler configurations
+        self.env_cache = {}  # Cache for environments
 
     def load_experiments(self, experiment_patterns: Optional[List[str]] = None, max_episodes_per_exp: Optional[int] = None) -> int:
         """
@@ -108,28 +112,28 @@ class ExperienceReplayManager:
         return total_loaded
 
     def _convert_episode_to_experience(self, episode_data: Dict, exp_dir: Path) -> Optional[HistoricalExperience]:
-        """Convert episode JSON data to HistoricalExperience"""
+        """Convert episode JSON data to HistoricalExperience."""
         try:
-                        # Extract parameters - handle missing fields by filtering
+            # Determine scheduler type from experiment directory name
+            scheduler_name = self._infer_scheduler_name(exp_dir.name)
+            
+            # Get or cache scheduler configuration
+            if scheduler_name not in self.scheduler_configs:
+                try:
+                    self.scheduler_configs[scheduler_name] = get_scheduler_config(scheduler_name)
+                except ValueError:
+                    print(f"Unknown scheduler type: {scheduler_name}, using scx_flashyspark")
+                    scheduler_name = "scx_flashyspark"
+                    self.scheduler_configs[scheduler_name] = get_scheduler_config(scheduler_name)
+            
+            scheduler_config = self.scheduler_configs[scheduler_name]
+            
+            # Extract and validate parameters
             params_dict = episode_data.get('params', {})
-
-            # Filter out parameters that don't exist in current SchedulerParams
-            # This handles compatibility with older experiments
-            valid_params = {}
+            valid_params = self._validate_historical_params(params_dict, scheduler_config)
+            
             try:
-                # Try to create a dummy SchedulerParams to see what fields are valid
-                dummy_params = SchedulerParams()
-                valid_fields = set(dummy_params.__dict__.keys())
-
-                for key, value in params_dict.items():
-                    if key in valid_fields:
-                        # Ensure we convert to proper boolean
-                        if isinstance(value, (bool, int, str)):
-                            bool_value = bool(value) if not isinstance(value, str) else value.lower() == 'true'
-                            valid_params[key] = bool_value
-
-                params = SchedulerParams(**valid_params)
-
+                params = SchedulerParams(scheduler_config, **valid_params)
             except Exception as param_error:
                 print(f"Error creating SchedulerParams: {param_error}")
                 return None
@@ -150,12 +154,14 @@ class ExperienceReplayManager:
             )
 
             # Get environment for state/action conversion (create if needed)
-            if self.env is None:
-                self.env = FlashySparkEnvironment()
-
-            # Convert parameters to state and action using correct method names
-            state = self.env._get_observation(params)
-            action = self.env._normalize_params(params)  # Use correct method name
+            if scheduler_name not in self.env_cache:
+                self.env_cache[scheduler_name] = SchedulerEnvironment(scheduler_name=scheduler_name)
+            
+            env = self.env_cache[scheduler_name]
+            
+            # Convert parameters to state and action
+            state = env._get_observation(params)
+            action = env._normalize_params(params)
 
             # For next_state, we'll use the same state (since we don't have sequential data)
             # In actual RL training, next_state would be after the action is taken
@@ -168,18 +174,56 @@ class ExperienceReplayManager:
                 next_state=next_state,
                 params=params,
                 original_reward=episode_data.get('reward', 0),
-                original_filename = exp_dir.name,
+                original_filename=exp_dir.name,
                 performance_metrics={
                     'pp_tokens_per_sec': benchmark_result.pp_tokens_per_sec,
                     'tg_tokens_per_sec': benchmark_result.tg_tokens_per_sec,
                     'execution_time': benchmark_result.execution_time
                 },
-                success=benchmark_result.success
+                success=benchmark_result.success,
+                scheduler_name=scheduler_name
             )
 
         except Exception as e:
             print(f"Error converting episode data: {e}")
             return None
+    
+    def _infer_scheduler_name(self, exp_dir_name: str) -> str:
+        """Infer scheduler name from experiment directory name."""
+        if "scx_rusty" in exp_dir_name.lower():
+            return "scx_rusty"
+        elif "scx_flashyspark" in exp_dir_name.lower() or "flashyspark" in exp_dir_name.lower():
+            return "scx_flashyspark"
+        else:
+            # Default to scx_flashyspark for backward compatibility
+            return "scx_flashyspark"
+    
+    def _validate_historical_params(self, params_dict: Dict, scheduler_config) -> Dict:
+        """Validate and filter historical parameters against current scheduler config."""
+        valid_params = {}
+        
+        for key, value in params_dict.items():
+            if key in scheduler_config.parameters:
+                spec = scheduler_config.parameters[key]
+                try:
+                    # Convert value according to parameter type
+                    if spec.param_type == ParameterType.BOOLEAN:
+                        if isinstance(value, str):
+                            valid_params[key] = value.lower() in ['true', '1', 'yes']
+                        else:
+                            valid_params[key] = bool(value)
+                    elif spec.param_type == ParameterType.INTEGER:
+                        valid_params[key] = int(value)
+                    elif spec.param_type == ParameterType.FLOAT:
+                        valid_params[key] = float(value)
+                    elif spec.param_type == ParameterType.CATEGORICAL:
+                        valid_params[key] = str(value)
+                except (ValueError, TypeError) as e:
+                    print(f"Warning: Could not convert parameter {key}={value}: {e}")
+                    # Use default value
+                    valid_params[key] = spec.default
+        
+        return valid_params
 
     def recalculate_rewards(self,
                           reward_function_params: Dict[str, Any],
@@ -305,7 +349,8 @@ class ExperienceReplayManager:
         # Group experiences by parameter combination
         for exp in self.historical_experiences:
             # Create a hashable representation of parameters
-            parameters_on = powerset([p for p in asdict(exp.params).items() if p[1]], min_length=3)
+            param_dict = exp.params.to_dict()
+            parameters_on = powerset([p for p in param_dict.items() if p[1]], min_length=3)
             for parameter_combo in parameters_on:
                param_key = tuple(parameter_combo)
                param_combinations[param_key].append(exp)
@@ -333,7 +378,8 @@ class ExperienceReplayManager:
                     'avg_pp_tokens_per_sec': avg_pp,
                     'avg_tg_tokens_per_sec': avg_tg,
                     'avg_execution_time': avg_exec_time,
-                    'experiments': [exp.original_filename for exp in experiences]
+                    'experiments': [exp.original_filename for exp in experiences],
+                    'schedulers': list(set([exp.scheduler_name for exp in experiences]))
                 })
 
         # Sort by frequency (total_count)
@@ -392,10 +438,12 @@ class ExperienceReplayManager:
                 'action': exp.action.tolist(),
                 'reward': exp.reward,
                 'next_state': exp.next_state.tolist(),
-                'params': asdict(exp.params),
+                'params': exp.params.to_dict(),
                 'original_reward': exp.original_reward,
                 'performance_metrics': exp.performance_metrics,
-                'success': exp.success
+                'success': exp.success,
+                'scheduler_name': exp.scheduler_name,
+                'original_filename': exp.original_filename
             }
             serializable_data.append(exp_data)
 
@@ -581,7 +629,7 @@ def diagnose_pretraining_data(experience_manager: ExperienceReplayManager, agent
 
 def main():
     parser = argparse.ArgumentParser(description="Experience Replay from Historical Data")
-    parser.add_argument("--results-dir", default="/home/nvidia/rl_experiments/fs_results",
+    parser.add_argument("--results-dir", default="results",
                        help="Directory containing experiment results")
     parser.add_argument("--experiment-patterns", nargs="*",
                        help="Experiment name patterns to include (e.g., 'ppo_500ep')")
@@ -678,7 +726,12 @@ def main():
         print(f"\nInitializing {args.algorithm.upper()} agent for pre-training...")
 
         # Create dummy environment to get dimensions
-        env = FlashySparkEnvironment()
+        # Use the first scheduler found in historical data, or default
+        scheduler_name = "scx_flashyspark"
+        if manager.historical_experiences:
+            scheduler_name = manager.historical_experiences[0].scheduler_name
+        
+        env = SchedulerEnvironment(scheduler_name=scheduler_name)
         state_dim = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
 

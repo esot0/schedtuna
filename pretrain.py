@@ -1,22 +1,33 @@
-#!/home/nvidia/rl_experiments/venv/bin/python3
+#!/usr/bin/env python3
+"""
+Pre-training and Analysis Tools for Scheduler Optimization
+=========================================================
+
+Utilities for analyzing historical experiment data and pre-training RL agents
+using supervised learning on successful parameter combinations.
+
+Features:
+- Load and analyze historical experiment results
+- Pre-train agents using behavior cloning
+- Analyze parameter effectiveness patterns
+- Support for multiple scheduler types
+"""
 
 import os
 import sys
-sys.path.append('/home/nvidia/rl_experiments')
 import json
 from typing import Optional, List
 from pathlib import Path
 
-def replace_old_rewards(results_dir: str = "/home/nvidia/rl_experiments/fs_results") -> int:
+def replace_old_rewards(results_dir: str = "results") -> int:
         """
-        Load historical data from previous experiments
+        Replace old reward values in historical experiment files with recalculated rewards.
 
         Args:
-            experiment_patterns: List of experiment name patterns to include (None = all)
-            max_episodes_per_exp: Maximum episodes to load per experiment (None = all)
+            results_dir: Directory containing experiment results
 
         Returns:
-            Number of experiences loaded
+            Number of experiment files processed
         """
         from experience_replay import ExperienceReplayManager
         import numpy as np
@@ -71,9 +82,12 @@ def replace_old_rewards(results_dir: str = "/home/nvidia/rl_experiments/fs_resul
 
 
 #  1: Load and analyze historical data with new reward function
-def load_and_recompute_rewards():
+def load_and_recompute_rewards(scheduler_name: str = "scx_flashyspark"):
     """
-    Load historical data and recalculate rewards with new parameters
+    Load historical data and recalculate rewards with updated reward function.
+    
+    Args:
+        scheduler_name: Name of the scheduler to analyze
     """
     print("=== 1: Load and Recompute Rewards ===")
 
@@ -106,7 +120,7 @@ def load_and_recompute_rewards():
     print(f"\nTop 10 configurations with new reward function:")
     for i, exp in enumerate(best_configs, 1):
         params_summary = []
-        for key, value in exp.params.__dict__.items():
+        for key, value in exp.params.to_dict().items():
             if value:  # Only show enabled parameters
                 params_summary.append(key)
 
@@ -118,14 +132,20 @@ def load_and_recompute_rewards():
     print(f"\nSaved {len(manager.historical_experiences)} experiences to historical_experiences_recomputed.json")
 
 
-def pretrain_agent():
+def pretrain_agent(scheduler_name: str = "scx_flashyspark"):
     """
-    Create and pre-train an agent using historical data
+    Create and pre-train an agent using historical data.
+    
+    Args:
+        scheduler_name: Name of the scheduler to train for
+        
+    Returns:
+        Path to the saved pre-trained model
     """
     print("\n===  2: Pre-train Agent ===")
 
     from experience_replay import ExperienceReplayManager, pretrain_agent_with_historical_data
-    from main import PPOAgent, FlashySparkEnvironment, DEVICE
+    from main import PPOAgent, SchedulerEnvironment, DEVICE
 
     # Load and process historical data
     manager = ExperienceReplayManager()
@@ -139,7 +159,7 @@ def pretrain_agent():
     reward_params = {'optimize_metric': 'pp_tokens_per_sec', 'reward_scaling': 2.0}
     manager.recalculate_rewards(reward_function_params=reward_params)
 
-    env = FlashySparkEnvironment()
+    env = SchedulerEnvironment(scheduler_name=scheduler_name)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
     agent = PPOAgent(state_dim, action_dim, device=DEVICE)
@@ -203,9 +223,12 @@ def continue_training_with_pretrained_model(pretrained_model_path):
     print(f"Training completed: {success}")
 
 
-def analyze_historical_patterns():
+def analyze_historical_patterns(scheduler_name: str = "scx_flashyspark"):
     """
-    Analyze patterns in historical data to understand what works
+    Analyze patterns in historical data to understand parameter effectiveness.
+    
+    Args:
+        scheduler_name: Name of the scheduler to analyze
     """
     print("\n===  4: Analyze Historical Patterns ===")
 
@@ -288,7 +311,7 @@ def analyze_historical_patterns():
         param_counts = {}
 
         for exp in experiences:
-            for param_name, param_value in exp.params.__dict__.items():
+            for param_name, param_value in exp.params.to_dict().items():
                 if param_value:  # Parameter is enabled
                     param_counts[param_name] = param_counts.get(param_name, 0) + 1
 
