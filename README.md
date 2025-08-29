@@ -1,4 +1,4 @@
-# Scheduler Parameter Optimizer
+# Schedtuna
 
 A comprehensive reinforcement learning framework for optimizing Linux scheduler parameters across multiple scheduler types and parameter configurations.
 
