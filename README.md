@@ -4,40 +4,97 @@ A comprehensive reinforcement learning framework for optimizing Linux scheduler 
 
 ## Overview
 
-This system uses reinforcement learning algorithms (PPO, SAC) to automatically discover optimal parameter configurations for various Linux schedulers.
+Schedtuna uses reinforcement learning algorithms (PPO, SAC) to automatically discover optimal parameter configurations for various Linux schedulers.
 
 
-## Supported Schedulers
 
-### scx_flashyspark
-Full-featured scheduler with comprehensive parameter support:
+## Workload-Specific Optimization
 
-#### Boolean Parameters
-- `slice_lag_scaling`: Dynamic slice lag scaling based on CPU utilization
-- `rr_sched`: Round-robin scheduling with fixed time slices
-- `no_builtin_idle`: Disable in-kernel idle CPU selection policy
-- `local_pcpu`: Enable prioritization of per-CPU tasks
-- `direct_dispatch`: Always allow direct dispatch to idle CPUs
-- `sticky_cpu`: Enable CPU stickiness to reduce task migrations
-- `stay_with_kthread`: Keep tasks on CPUs where kthreads are running
-- `native_priority`: Use native Linux priority range
-- `local_kthreads`: Enable per-CPU kthread prioritization
-- `no_wake_sync`: Disable direct dispatch during synchronous wakeups
-- `aggressive_gpu_tasks`: GPU task mode for performance cores
-- `timer_kick`: Use BPF timer for task kicking
+The optimizer now supports workload-specific parameter optimization. You can specify the workload type you want to optimize for, and the system will:
 
-#### Numeric Parameters
-- `slice_us`: Base time slice duration (1000-100000 μs)
-- `cpu_util_threshold`: CPU utilization threshold (0.1-1.0)
+1. **Train an RL agent** specifically for that workload type
+2. **Save optimized parameters** to a JSON file (`~/rl_scx_params/optimized_params.json`)
+3. **Automatically apply** these parameters when the scheduler detects the workload type
 
-#### Categorical Parameters
-- `scheduling_policy`: Overall policy mode (default, performance, powersave, latency)
+### Supported Workload Types
 
-### scx_rusty
-Basic scheduler support with essential parameters:
-- `direct`: Enable direct dispatch
-- `kick`: Enable kicking mechanism
-- `slice_us`: Time slice duration (1000-50000 μs)
+- **`latency_sensitive`**: High context switch rate, short execution bursts (e.g., web servers, message passing)
+- **`cpu_intensive`**: Low context switches, long runtime (e.g., computation, compilation)
+- **`cache_sensitive`**: Frequent CPU migrations, benefits from cache locality
+- **`gpu_intensive`**: GPU operations detected, needs big core coordination
+- **`mixed`**: Mixed characteristics, balanced approach
+
+### Workload Optimization Examples
+
+```python
+from rl_scx_params import optimize_scheduler
+
+# Optimize for latency-sensitive workloads
+results = optimize_scheduler(
+    workload_type="latency_sensitive",
+    optimize_metric="pp_tokens_per_sec",
+    episodes=100
+)
+
+# Optimize for CPU-intensive workloads
+results = optimize_scheduler(
+    workload_type="cpu_intensive",
+    optimize_metric="tg_tokens_per_sec",
+    episodes=150
+)
+```
+
+Or use configuration files:
+
+```yaml
+# latency_sensitive_config.yaml
+scheduler_name: scx_flashyspark
+workload_type: latency_sensitive
+optimize_metric: pp_tokens_per_sec
+episodes: 100
+```
+
+### Integration with scx_flashyspark
+
+The `scx_flashyspark` scheduler automatically loads optimized parameters from `~/rl_scx_params/optimized_params.json`. When it detects a workload type change, it applies ALL corresponding optimized parameters if available, completely overriding default values.
+
+**Important**: When ML-optimized parameters are available for a workload type, ALL parameters from the optimized set are applied, not just specific ones. This ensures consistent behavior controlled entirely by the ML optimization.
+
+The JSON file structure includes ALL scheduler parameters:
+```json
+{
+  "latency_sensitive": {
+    "parameters": {
+      // Boolean parameters
+      "sticky_cpu": false,
+      "direct_dispatch": false,
+      "aggressive_gpu_tasks": false,
+      "local_pcpu": true,
+      "no_wake_sync": false,
+      "slice_lag_scaling": true,
+      "local_kthreads": true,
+      "stay_with_kthread": false,
+      "native_priority": false,
+      "tickless_sched": false,
+      "timer_kick": false,
+      
+      // Time slice parameters (microseconds)
+      "slice_us": 2048,
+      "slice_us_min": 128,
+      "slice_us_lag": 2048,
+      "run_us_lag": 16384,
+      
+      // Other numeric parameters
+      "cpu_busy_thresh": 50,
+      "max_avg_nvcsw": 256
+    },
+    "reward": 125.3,
+    "experiment_path": "~/rl_experiments/fs_results/...",
+    "timestamp": "2024-01-20T10:30:00"
+  },
+  "cpu_intensive": { ... }
+}
+```
 
 ## Quick Start
 
